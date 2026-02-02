@@ -140,37 +140,91 @@ def create_reasoning_sample(sample: dict, tokenizer, mode: str = "reasoning") ->
     }
 
 
-def main():
-    """Generate the reasoning training dataset."""
+def main(dataset_source: str = "gifteval", num_samples: int = 500):
+    """
+    Generate the reasoning training dataset.
+    
+    Args:
+        dataset_source: "gifteval" or "sarsim0"
+        num_samples: Number of samples (used for sarsim0)
+    """
+    import fire
+    
     print("=" * 60)
     print("PREPARING REASONING DATASET")
     print("=" * 60)
+    print(f"Dataset source: {dataset_source}")
     
+    # Initialize tokenizer
+    from chronos import ChronosConfig
+    config = ChronosConfig(
+        tokenizer_class="MeanScaleUniformBins",
+        tokenizer_kwargs={"low_limit": -15.0, "high_limit": 15.0},
+        n_tokens=4096,
+        n_special_tokens=2,
+        pad_token_id=0,
+        eos_token_id=1,
+        use_eos_token=True,
+        model_type="seq2seq",
+        context_length=CONTEXT_LENGTH,
+        prediction_length=PREDICTION_LENGTH,
+        num_samples=20,
+        temperature=1.0,
+        top_k=50,
+        top_p=1.0,
+    )
+    tokenizer = config.create_tokenizer()
+    
+    if dataset_source == "sarsim0":
+        # Use SarSim0 synthetic data
+        reasoning_samples = _prepare_sarsim0_dataset(tokenizer, num_samples)
+        output_path = DATA_DIR / "sarsim0-reasoning.arrow"
+    else:
+        # Use GiftEval dataset (default)
+        reasoning_samples = _prepare_gifteval_dataset(tokenizer)
+        output_path = OUTPUT_PATH
+    
+    # Ensure output directory exists
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    
+    # Save as Arrow dataset
+    print(f"Saving to: {output_path}")
+    reasoning_ds = datasets.Dataset.from_list(reasoning_samples)
+    reasoning_ds.to_parquet(str(output_path).replace(".arrow", ".parquet"))
+    
+    # Convert to Arrow format
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    
+    table = pq.read_table(str(output_path).replace(".arrow", ".parquet"))
+    with pa.OSFile(str(output_path), 'wb') as f:
+        writer = pa.ipc.new_file(f, table.schema)
+        writer.write_table(table)
+        writer.close()
+    
+    # Clean up parquet
+    Path(str(output_path).replace(".arrow", ".parquet")).unlink()
+    
+    print(f"\n✓ Dataset saved: {output_path}")
+    print(f"  Total samples: {len(reasoning_samples)}")
+    print(f"  Fast mode: {sum(1 for s in reasoning_samples if s['mode'] == 'fast')}")
+    print(f"  Reasoning mode: {sum(1 for s in reasoning_samples if s['mode'] == 'reasoning')}")
+
+
+def _prepare_gifteval_dataset(tokenizer) -> list:
+    """Prepare dataset from GiftEval source."""
     # Load source data
     if not SOURCE_PATH.exists():
         print(f"Error: Source data not found at {SOURCE_PATH}")
         print("Please run prepare_gifteval_subset.py first")
-        return
+        return []
     
     print(f"Loading source data from: {SOURCE_PATH}")
     source_ds = datasets.load_dataset("arrow", data_files=str(SOURCE_PATH), split="train")
     print(f"  Loaded {len(source_ds)} samples")
     
-    # Initialize tokenizer
-    from chronos.config import ChronosConfig
-    config = ChronosConfig(
-        tokenizer_class="MeanScaleUniformBins",
-        n_tokens=4096,
-        n_special_tokens=2,
-        pad_token_id=0,
-        eos_token_id=1,
-        context_length=CONTEXT_LENGTH,
-        prediction_length=PREDICTION_LENGTH,
-    )
-    tokenizer = config.create_tokenizer()
-    
     # Create reasoning samples
-    print("Generating reasoning samples...")
+    print("Generating reasoning samples from GiftEval...")
     reasoning_samples = []
     
     for i, sample in enumerate(source_ds):
@@ -186,30 +240,36 @@ def main():
             print(f"  Warning: Skipped sample {i}: {e}")
     
     print(f"  Generated {len(reasoning_samples)} samples")
+    return reasoning_samples
+
+
+def _prepare_sarsim0_dataset(tokenizer, num_samples: int) -> list:
+    """Prepare dataset from SarSim0 synthetic generator."""
+    from sarsim0_adapter import generate_sarsim0_dataset, create_reasoning_tokens
     
-    # Save as Arrow dataset
-    print(f"Saving to: {OUTPUT_PATH}")
-    reasoning_ds = datasets.Dataset.from_list(reasoning_samples)
-    reasoning_ds.to_parquet(str(OUTPUT_PATH).replace(".arrow", ".parquet"))
+    print(f"Generating {num_samples} samples from SarSim0...")
+    samples = generate_sarsim0_dataset(num_samples=num_samples, seed=42)
     
-    # Convert to Arrow format
-    import pyarrow as pa
-    import pyarrow.parquet as pq
+    # Add reasoning tokens
+    print("Adding reasoning tokens...")
+    reasoning_samples = []
     
-    table = pq.read_table(str(OUTPUT_PATH).replace(".arrow", ".parquet"))
-    with pa.OSFile(str(OUTPUT_PATH), 'wb') as f:
-        writer = pa.ipc.new_file(f, table.schema)
-        writer.write_table(table)
-        writer.close()
+    for i, sample in enumerate(samples):
+        if i % 100 == 0:
+            print(f"  Processing sample {i}/{len(samples)}")
+        
+        try:
+            reasoning_tokens = create_reasoning_tokens(sample, tokenizer)
+            sample["reasoning_tokens"] = reasoning_tokens
+            reasoning_samples.append(sample)
+        except Exception as e:
+            print(f"  Warning: Skipped sample {i}: {e}")
     
-    # Clean up parquet
-    Path(str(OUTPUT_PATH).replace(".arrow", ".parquet")).unlink()
-    
-    print(f"\n✓ Dataset saved: {OUTPUT_PATH}")
-    print(f"  Total samples: {len(reasoning_samples)}")
-    print(f"  Fast mode: {sum(1 for s in reasoning_samples if s['mode'] == 'fast')}")
-    print(f"  Reasoning mode: {sum(1 for s in reasoning_samples if s['mode'] == 'reasoning')}")
+    print(f"  Generated {len(reasoning_samples)} samples")
+    return reasoning_samples
 
 
 if __name__ == "__main__":
-    main()
+    import fire
+    fire.Fire(main)
+

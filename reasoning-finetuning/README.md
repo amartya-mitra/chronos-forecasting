@@ -22,27 +22,46 @@ Train Chronos-2-Small to support two operating modes:
    [Trend: 64 tokens] [Seasonality: 64 tokens] [Volatility: 64 tokens] [Forecast: 64 tokens]
    ```
 
-## Dataset
+## Dataset Options
 
-### Source
-- **Base Dataset**: GiftEval (time series forecasting benchmark)
-- **Training Data**: `gifteval-reasoning.arrow` (414 samples total)
-  - Train: 331 samples (80%)
-  - Validation: 83 samples (20%)
+Two dataset sources are supported:
+
+### Option 1: GiftEval (STL Decomposition)
+
+```bash
+python reasoning-finetuning/prepare_dataset.py --dataset-source gifteval
+```
+
+- **Source**: GiftEval time series benchmark
+- **Decomposition**: Approximated via STL (`statsmodels.tsa.seasonal.STL`)
+- **Output**: `data/gifteval-reasoning.arrow`
+
+### Option 2: SarSim0 (Synthetic with Known Decomposition)
+
+```bash
+python reasoning-finetuning/prepare_dataset.py --dataset-source sarsim0 --num-samples 1000
+```
+
+- **Source**: SarSim0 synthetic generator (`synth-data/SarSim0-main/`)
+- **Decomposition**: Exact components from generation (trend, seasonal, volatility)
+- **Output**: `data/sarsim0-reasoning.arrow`
+
+> **Advantage**: SarSim0 provides *exact* decomposition, not approximated. This should improve reasoning mode training.
+
+### SarSim0 Validation
+
+The synthetic data was validated against the base Chronos model:
+
+| Metric | Value |
+|--------|-------|
+| Samples Tested | 6 |
+| Average Correlation | **+0.68** |
+
+![SarSim0 Validation](figures/sarsim0_validation.png)
+
+*Green: Target from SarSim0 | Blue dashed: Base model prediction*
 
 ### Sample Structure
-Each training sample contains:
-- `target`: Full time series values
-- `start`: Timestamp of first observation
-- `freq`: Time series frequency
-- `item_id`: Unique identifier
-- `reasoning_tokens`: Pre-computed decomposition + forecast tokens
-- `mode`: "fast" or "reasoning"
-
-### Ground Truth Generation
-Decomposition components are computed using:
-- **Trend & Seasonality**: STL decomposition (`statsmodels.tsa.seasonal.STL`)
-- **Volatility**: Rolling standard deviation (window = seasonality period)
 
 ## Training Configuration
 
@@ -72,30 +91,20 @@ save_steps: 200
 
 ```
 chronos-forecasting/
-├── README.md                     # Main Chronos README
-├── pyproject.toml                # Package configuration
-├── src/                          # Chronos source code
-├── scripts/                      # Original Chronos scripts
-├── test/                         # Unit tests
 ├── reasoning-finetuning/         # Reasoning mode extension
 │   ├── README.md                 # This file
 │   ├── model_utils.py            # Model availability & download
 │   ├── prepare_dataset.py        # Generate training data
+│   ├── sarsim0_adapter.py        # SarSim0 → reasoning format
+│   ├── validate_sarsim0.py       # Validate synthetic data
 │   ├── train.py                  # Training wrapper
 │   ├── verify_fast_mode.py       # Fast mode verification
 │   ├── verify_reasoning.py       # Reasoning mode verification
-│   ├── configs/                  
-│   │   └── default.yaml          # Training config
+│   ├── configs/default.yaml      # Training config
 │   ├── data/                     # Dataset files (gitignored)
-│   │   └── gifteval-*.arrow      
-│   ├── figures/                  # Verification plots (gitignored)
-│   │   └── *.png                 
-│   ├── logs/                     # Training logs (gitignored)
-│   │   └── *.log                 
-│   └── scripts/                  # Utility scripts
-│       └── *.py                  
+│   └── figures/                  # Plots (gitignored)
+├── synth-data/SarSim0-main/      # Synthetic data generator
 ├── output/                       # Model outputs (gitignored)
-│   └── reasoning-v4-from-amazon/
 └── .gitignore                    
 ```
 
@@ -116,23 +125,32 @@ python reasoning-finetuning/model_utils.py --check-base
 python reasoning-finetuning/model_utils.py --check-finetuned
 ```
 
-### 3. Prepare Training Data (if needed)
+### 3. Prepare Training Data
 ```bash
-python reasoning-finetuning/prepare_dataset.py
+# Option A: GiftEval (requires gifteval-subset.arrow)
+python reasoning-finetuning/prepare_dataset.py --dataset-source gifteval
+
+# Option B: SarSim0 synthetic data (recommended)
+python reasoning-finetuning/prepare_dataset.py --dataset-source sarsim0 --num-samples 1000
 ```
 
-### 4. Train the Model
+### 4. Validate Synthetic Data (optional)
+```bash
+python reasoning-finetuning/validate_sarsim0.py
+```
+
+### 5. Train the Model
 ```bash
 python reasoning-finetuning/train.py reasoning-finetuning/configs/default.yaml
 ```
 
-### 5. Verify Fast Mode
+### 6. Verify Fast Mode
 ```bash
 python reasoning-finetuning/verify_fast_mode.py
 ```
 Expected: Correlation ≥ 0.99 between finetuned (fast mode) and base model.
 
-### 6. Verify Reasoning Mode
+### 7. Verify Reasoning Mode
 ```bash
 python reasoning-finetuning/verify_reasoning.py
 ```

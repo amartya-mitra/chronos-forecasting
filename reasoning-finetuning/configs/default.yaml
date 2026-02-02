@@ -4,11 +4,19 @@
 # Base Model
 model_id: amazon/chronos-t5-small
 
+# Dataset Source: "gifteval" or "sarsim0"
+dataset_source: gifteval
+
 # Training Data (relative to reasoning-finetuning/)
 training_data_paths:
   - reasoning-finetuning/data/gifteval-reasoning.arrow
 training_data_probabilities:
   - 1.0
+
+# SarSim0 Configuration (used when dataset_source=sarsim0)
+sarsim0:
+  num_samples: 1000
+  seed: 42
 
 # Sequence Parameters
 context_length: 512
