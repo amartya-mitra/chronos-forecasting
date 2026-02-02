@@ -1,0 +1,63 @@
+# Reasoning Mode Finetuning Configuration
+# Default configuration for training Chronos-2-Small with reasoning capability
+
+# Base Model
+model_id: amazon/chronos-t5-small
+
+# Training Data (relative to reasoning-finetuning/)
+training_data_paths:
+  - reasoning-finetuning/data/gifteval-reasoning.arrow
+training_data_probabilities:
+  - 1.0
+
+# Sequence Parameters
+context_length: 512
+prediction_length: 64
+
+# Training Parameters
+max_steps: 1000
+learning_rate: 0.00001
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+per_device_train_batch_size: 16
+gradient_accumulation_steps: 2
+
+# Evaluation
+eval_steps: 200
+save_steps: 200
+
+# Model Architecture
+model_type: seq2seq
+random_init: false
+tie_embeddings: true
+
+# Output
+output_dir: ./output/reasoning-v4-from-amazon/
+
+# Tokenizer
+tokenizer_class: MeanScaleUniformBins
+tokenizer_kwargs:
+  low_limit: -15.0
+  high_limit: 15.0
+n_tokens: 4096
+n_special_tokens: 2
+pad_token_id: 0
+eos_token_id: 1
+use_eos_token: true
+
+# Generation
+temperature: 1.0
+top_k: 50
+top_p: 1.0
+num_samples: 20
+
+# Optimization
+optim: adamw_torch_fused
+tf32: false
+torch_compile: false
+
+# Data Loading
+shuffle_buffer_length: 1000
+dataloader_num_workers: 0
+min_past: 60
+max_missing_prop: 0.9

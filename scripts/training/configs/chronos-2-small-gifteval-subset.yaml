@@ -1,0 +1,39 @@
+training_data_paths:
+- "gifteval-subset.arrow"
+training_data_probabilities:
+- 1.0
+context_length: 512
+prediction_length: 64
+min_past: 60
+max_steps: 50
+save_steps: 50
+log_steps: 10
+per_device_train_batch_size: 16
+learning_rate: 0.0001
+optim: adamw_torch_fused
+num_samples: 20
+shuffle_buffer_length: 1000
+gradient_accumulation_steps: 2
+model_id: amazon/chronos-t5-small
+model_type: seq2seq
+random_init: false
+tie_embeddings: true
+output_dir: ./output/gifteval-reasoning-finetune/
+tf32: false
+torch_compile: false
+tokenizer_class: "MeanScaleUniformBins"
+tokenizer_kwargs:
+  low_limit: -15.0
+  high_limit: 15.0
+n_tokens: 4096
+n_special_tokens: 2
+pad_token_id: 0
+eos_token_id: 1
+use_eos_token: true
+temperature: 1.0
+top_k: 50
+top_p: 1.0
+lr_scheduler_type: linear
+warmup_ratio: 0.1
+dataloader_num_workers: 0
+max_missing_prop: 0.9
