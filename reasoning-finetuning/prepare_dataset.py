@@ -84,9 +84,22 @@ def compute_decomposition(series: np.ndarray, period: int = 7) -> dict:
         }
 
 
+# Fixed amplification factors for small-scale decomposition components.
+# These bring seasonal/volatility into a token-bin range comparable to trend/forecast,
+# ensuring the tokenizer allocates adequate resolution to each component.
+# At inference, de-amplify by dividing by these same constants.
+SEASONAL_AMP = 10.0
+VOLATILITY_AMP = 50.0
+
+
 def create_reasoning_sample(sample: dict, tokenizer, mode: str = "reasoning") -> dict:
     """
     Create a training sample with reasoning tokens.
+    
+    Tokenization strategy:
+    - Compute scale from the CONTEXT (same scale used at inference)
+    - Apply fixed amplification to seasonal/volatility for bin resolution
+    - Tokenize all components using context scale
     
     Args:
         sample: Original sample with 'target' field
@@ -94,7 +107,7 @@ def create_reasoning_sample(sample: dict, tokenizer, mode: str = "reasoning") ->
         mode: "fast" or "reasoning"
     
     Returns:
-        Sample with reasoning_tokens and mode fields
+        Sample with reasoning_tokens, mode, and context_scale fields
     """
     import torch
     
@@ -110,33 +123,37 @@ def create_reasoning_sample(sample: dict, tokenizer, mode: str = "reasoning") ->
         context = target[:split]
         future = target[split:]
     
+    # Step 1: Compute scale from CONTEXT (consistent with inference)
+    context_tensor = torch.tensor(context).float().unsqueeze(0)
+    _, _, context_scale = tokenizer.context_input_transform(context_tensor)
+    
     if mode == "fast":
-        # Fast mode: just the forecast tokens
+        # Fast mode: tokenize forecast using context scale
         future_tensor = torch.tensor(future).float().unsqueeze(0)
-        _, _, scale = tokenizer.context_input_transform(future_tensor)
-        tokens = tokenizer.context_input_transform(future_tensor)[0][0].numpy()
-        reasoning_tokens = tokens[:PREDICTION_LENGTH].tolist()
+        tokens, _, _ = tokenizer._input_transform(future_tensor, scale=context_scale)
+        reasoning_tokens = tokens[0, :PREDICTION_LENGTH].numpy().tolist()
     else:
         # Reasoning mode: decomposition + forecast
         decomp = compute_decomposition(context, period=7)
         
-        # Combine: trend + seasonal + volatility + forecast
-        combined = np.concatenate([
-            decomp["trend"],
-            decomp["seasonal"],
-            decomp["volatility"],
-            future
-        ])
+        # Step 2: Apply amplification to small-scale components
+        trend = decomp["trend"]
+        seasonal_amp = decomp["seasonal"] * SEASONAL_AMP
+        volatility_amp = decomp["volatility"] * VOLATILITY_AMP
         
-        # Tokenize
+        # Step 3: Concatenate in canonical order: trend → seasonal → volatility → forecast
+        combined = np.concatenate([trend, seasonal_amp, volatility_amp, future])
+        
+        # Step 4: Tokenize using context scale (NOT the combined scale)
         combined_tensor = torch.tensor(combined).float().unsqueeze(0)
-        tokens, _, scale = tokenizer.context_input_transform(combined_tensor)
+        tokens, _, _ = tokenizer._input_transform(combined_tensor, scale=context_scale)
         reasoning_tokens = tokens[0].numpy().tolist()
     
     return {
         **sample,
         "reasoning_tokens": reasoning_tokens,
         "mode": mode,
+        "context_scale": float(context_scale.item()),
     }
 
 
@@ -259,8 +276,9 @@ def _prepare_sarsim0_dataset(tokenizer, num_samples: int) -> list:
             print(f"  Processing sample {i}/{len(samples)}")
         
         try:
-            reasoning_tokens = create_reasoning_tokens(sample, tokenizer)
+            reasoning_tokens, context_scale = create_reasoning_tokens(sample, tokenizer)
             sample["reasoning_tokens"] = reasoning_tokens
+            sample["context_scale"] = context_scale
             reasoning_samples.append(sample)
         except Exception as e:
             print(f"  Warning: Skipped sample {i}: {e}")

@@ -226,6 +226,10 @@ def _normalize_series(series: np.ndarray) -> np.ndarray:
     return series
 
 
+# Import amplification factors from prepare_dataset (single source of truth)
+from prepare_dataset import SEASONAL_AMP, VOLATILITY_AMP
+
+
 def create_reasoning_tokens(
     sample: Dict,
     tokenizer,
@@ -233,40 +237,53 @@ def create_reasoning_tokens(
     """
     Convert decomposition + forecast to token sequence.
     
+    Uses context scale for tokenization consistency with inference.
+    Applies amplification to seasonal/volatility for bin resolution.
+    
     For reasoning_mode:
-        [trend_tokens] + [seasonal_tokens] + [volatility_tokens] + [forecast_tokens]
+        [trend_tokens] + [seasonal_amp_tokens] + [volatility_amp_tokens] + [forecast_tokens]
     
     For fast_mode:
         [forecast_tokens] only
+    
+    Returns:
+        Tuple of (token list, context_scale float)
     """
     target = np.array(sample["target"])
     
-    # Get future portion for forecast
+    # Split into context and future
     if len(target) >= CONTEXT_LENGTH + PREDICTION_LENGTH:
+        context = target[-(CONTEXT_LENGTH + PREDICTION_LENGTH):-PREDICTION_LENGTH]
         future = target[-PREDICTION_LENGTH:]
     else:
-        future = target[-PREDICTION_LENGTH:] if len(target) > PREDICTION_LENGTH else target
+        split = max(1, len(target) - PREDICTION_LENGTH)
+        context = target[:split]
+        future = target[split:split + PREDICTION_LENGTH]
+    
+    # Compute context scale (consistent with inference)
+    context_tensor = torch.tensor(context).float().unsqueeze(0)
+    _, _, context_scale = tokenizer.context_input_transform(context_tensor)
     
     if sample["mode"] == "fast":
-        # Fast mode: just forecast tokens
+        # Fast mode: tokenize forecast using context scale
         future_tensor = torch.tensor(future).float().unsqueeze(0)
-        tokens, _, _ = tokenizer.context_input_transform(future_tensor)
-        return tokens[0, :PREDICTION_LENGTH].numpy().tolist()
+        tokens, _, _ = tokenizer._input_transform(future_tensor, scale=context_scale)
+        return tokens[0, :PREDICTION_LENGTH].numpy().tolist(), float(context_scale.item())
     
     else:
         # Reasoning mode: decomposition + forecast
         trend = np.array(sample["trend"])
-        seasonal = np.array(sample["seasonal"])
-        volatility = np.array(sample["volatility"])
+        seasonal_amp = np.array(sample["seasonal"]) * SEASONAL_AMP
+        volatility_amp = np.array(sample["volatility"]) * VOLATILITY_AMP
         
-        # Combine all components
-        combined = np.concatenate([trend, seasonal, volatility, future])
+        # Canonical order: trend → seasonal → volatility → forecast
+        combined = np.concatenate([trend, seasonal_amp, volatility_amp, future])
         
-        # Tokenize
+        # Tokenize using context scale
         combined_tensor = torch.tensor(combined).float().unsqueeze(0)
-        tokens, _, _ = tokenizer.context_input_transform(combined_tensor)
+        tokens, _, _ = tokenizer._input_transform(combined_tensor, scale=context_scale)
         
-        return tokens[0].numpy().tolist()
+        return tokens[0].numpy().tolist(), float(context_scale.item())
 
 
 def generate_sarsim0_dataset(
