@@ -89,20 +89,43 @@ class DatasetVerifier:
         self.dataset_path = Path(dataset_path)
         self.tokenizer = create_tokenizer()
         self.violations = []
+        self.source = None  # auto-detected: "gifteval" or "sarsim0"
         self.stats = {
             "total": 0,
             "fast_mode": 0,
             "reasoning_mode": 0,
-            "passed": 0,
-            "failed": 0,
         }
         self.check_results = {
             "token_count": {"pass": 0, "fail": 0, "details": []},
             "roundtrip": {"pass": 0, "fail": 0, "details": []},
             "component_order": {"pass": 0, "fail": 0, "details": []},
-            "stl_match": {"pass": 0, "fail": 0, "details": []},
+            "decomp_match": {"pass": 0, "fail": 0, "details": []},
             "scale_consistency": {"pass": 0, "fail": 0, "details": []},
         }
+
+    def _detect_source(self, ds):
+        """Auto-detect dataset source by checking if samples have stored components."""
+        sample = ds[0]
+        has_stored = all(k in sample for k in ("trend", "seasonal", "volatility"))
+        self.source = "sarsim0" if has_stored else "gifteval"
+        print(f"  Detected source: {self.source}"
+              f" ({'stored components' if has_stored else 'STL recomputation'})")
+
+    def _get_ground_truth(self, sample: dict, context: np.ndarray) -> dict:
+        """
+        Get ground truth decomposition based on dataset source.
+        
+        For GiftEval: recompute via STL from context
+        For SarSim0 : use stored components from the sample
+        """
+        if self.source == "sarsim0":
+            return {
+                "trend": np.array(sample["trend"]),
+                "seasonal": np.array(sample["seasonal"]),
+                "volatility": np.array(sample["volatility"]),
+            }
+        else:
+            return compute_decomposition(context, period=7)
 
     def load_dataset(self):
         """Load the arrow dataset."""
@@ -111,6 +134,7 @@ class DatasetVerifier:
             "arrow", data_files=str(self.dataset_path), split="train"
         )
         print(f"  Loaded {len(self.ds)} samples")
+        self._detect_source(self.ds)
         return self.ds
 
     def verify_sample(self, idx: int, sample: dict):
@@ -182,33 +206,32 @@ class DatasetVerifier:
             else:
                 self.check_results["scale_consistency"]["pass"] += 1
         else:
-            # No stored scale — can't check, but note it
             self.check_results["scale_consistency"]["pass"] += 1
 
         # Use recomputed scale for de-tokenization
         scale = recomputed_scale_val
 
-        # --- Check 3: Tokenize→detokenize roundtrip ---
+        # --- De-tokenize and split into components ---
         detok_values = detokenize(tokens, scale, self.tokenizer)
 
-        # Split into components
         trend_detok = detok_values[0:DECOMPOSITION_LENGTH]
         seasonal_detok = detok_values[DECOMPOSITION_LENGTH:2*DECOMPOSITION_LENGTH] / SEASONAL_AMP
         volatility_detok = detok_values[2*DECOMPOSITION_LENGTH:3*DECOMPOSITION_LENGTH] / VOLATILITY_AMP
-        forecast_detok = detok_values[3*DECOMPOSITION_LENGTH:3*DECOMPOSITION_LENGTH + PREDICTION_LENGTH]
+        forecast_detok = detok_values[3*DECOMPOSITION_LENGTH:]
 
-        # Recompute from context
-        decomp = compute_decomposition(context, period=7)
-        trend_fresh = decomp["trend"]
-        seasonal_fresh = decomp["seasonal"]
-        volatility_fresh = decomp["volatility"]
+        # --- Get ground truth (source-aware) ---
+        gt = self._get_ground_truth(sample, context)
+        trend_gt = gt["trend"]
+        seasonal_gt = gt["seasonal"]
+        volatility_gt = gt["volatility"]
 
-        # Roundtrip check: re-tokenize the decomposition and compare tokens
-        trend_amp_fresh = trend_fresh
-        seasonal_amp_fresh = seasonal_fresh * SEASONAL_AMP
-        volatility_amp_fresh = volatility_fresh * VOLATILITY_AMP
-        combined_fresh = np.concatenate([trend_amp_fresh, seasonal_amp_fresh, volatility_amp_fresh, future])
-        combined_tensor = torch.tensor(combined_fresh).float().unsqueeze(0)
+        # --- Check 3: Roundtrip fidelity ---
+        # Re-tokenize using ground truth + context scale, compare tokens
+        trend_amp_gt = trend_gt
+        seasonal_amp_gt = seasonal_gt * SEASONAL_AMP
+        volatility_amp_gt = volatility_gt * VOLATILITY_AMP
+        combined_gt = np.concatenate([trend_amp_gt, seasonal_amp_gt, volatility_amp_gt, future])
+        combined_tensor = torch.tensor(combined_gt).float().unsqueeze(0)
         retokens, _, _ = self.tokenizer._input_transform(combined_tensor, scale=recomputed_scale)
         retokens_list = retokens[0].numpy().tolist()
 
@@ -223,12 +246,11 @@ class DatasetVerifier:
         else:
             self.check_results["roundtrip"]["pass"] += 1
 
-        # --- Check 4: Component ordering via correlation ---
-        # If trend slot correlates more with fresh seasonal than fresh trend → swapped
-        corr_trend_trend = safe_corr(trend_detok, trend_fresh)
-        corr_trend_seasonal = safe_corr(trend_detok, seasonal_fresh)
-        corr_seasonal_seasonal = safe_corr(seasonal_detok, seasonal_fresh)
-        corr_seasonal_trend = safe_corr(seasonal_detok, trend_fresh)
+        # --- Check 4: Component ordering ---
+        corr_trend_trend = safe_corr(trend_detok, trend_gt)
+        corr_trend_seasonal = safe_corr(trend_detok, seasonal_gt)
+        corr_seasonal_seasonal = safe_corr(seasonal_detok, seasonal_gt)
+        corr_seasonal_trend = safe_corr(seasonal_detok, trend_gt)
 
         order_ok = True
         if corr_trend_seasonal > corr_trend_trend + 0.1:
@@ -246,37 +268,37 @@ class DatasetVerifier:
         if order_ok:
             self.check_results["component_order"]["pass"] += 1
 
-        # --- Check 5: Decomposition matches independent STL ---
+        # --- Check 5: Decomposition match ---
         corr_forecast = safe_corr(forecast_detok, future)
 
-        stl_ok = True
+        decomp_ok = True
         if corr_trend_trend < DECOMP_CORR_THRESHOLD:
-            stl_ok = False
+            decomp_ok = False
             self._add_check_fail(
-                idx, "stl_match",
+                idx, "decomp_match",
                 f"Trend corr={corr_trend_trend:+.3f} < {DECOMP_CORR_THRESHOLD}"
             )
         if corr_seasonal_seasonal < DECOMP_CORR_THRESHOLD:
-            stl_ok = False
+            decomp_ok = False
             self._add_check_fail(
-                idx, "stl_match",
+                idx, "decomp_match",
                 f"Seasonal corr={corr_seasonal_seasonal:+.3f} < {DECOMP_CORR_THRESHOLD}"
             )
-        corr_vol = safe_corr(volatility_detok, volatility_fresh)
+        corr_vol = safe_corr(volatility_detok, volatility_gt)
         if corr_vol < VOLATILITY_CORR_THRESHOLD:
-            stl_ok = False
+            decomp_ok = False
             self._add_check_fail(
-                idx, "stl_match",
+                idx, "decomp_match",
                 f"Volatility corr={corr_vol:+.3f} < {VOLATILITY_CORR_THRESHOLD}"
             )
         if corr_forecast < DECOMP_CORR_THRESHOLD:
-            stl_ok = False
+            decomp_ok = False
             self._add_check_fail(
-                idx, "stl_match",
+                idx, "decomp_match",
                 f"Forecast corr={corr_forecast:+.3f} < {DECOMP_CORR_THRESHOLD}"
             )
-        if stl_ok:
-            self.check_results["stl_match"]["pass"] += 1
+        if decomp_ok:
+            self.check_results["decomp_match"]["pass"] += 1
 
     def _add_check_fail(self, idx: int, check_name: str, detail: str):
         """Record a check failure."""
