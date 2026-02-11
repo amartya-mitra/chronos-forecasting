@@ -68,6 +68,10 @@ class ReasoningChronosDataset(torch.utils.data.IterableDataset):
     """
     Custom dataset that produces Fast Mode and Reasoning Mode samples.
     
+    Supports two dataset formats:
+    1. Pre-tokenized (GiftEval): has 'reasoning_tokens', 'mode', 'context_scale'
+    2. Raw components (SarSim0): has 'trend', 'seasonal', 'volatility' arrays
+    
     Fast Mode: [<|fast_mode|> + History] -> [Forecast + EOS]
     Reasoning Mode: [<|reasoning_mode|> + History] -> [Trend + Season + Vol + Forecast + EOS]
     """
@@ -100,6 +104,14 @@ class ReasoningChronosDataset(torch.utils.data.IterableDataset):
         # Token IDs - APPENDED AT VOCAB END (not overwriting bins!)
         self.fast_token_id = FAST_MODE_TOKEN_ID       # 4096
         self.reason_token_id = REASONING_MODE_TOKEN_ID # 4097
+        
+        # Detect dataset format by checking first sample
+        first_sample = datasets[0][0]
+        self.pretokenized = 'reasoning_tokens' in first_sample and 'trend' not in first_sample
+        if self.pretokenized:
+            logger.info("Detected PRE-TOKENIZED dataset format (GiftEval)")
+        else:
+            logger.info("Detected RAW COMPONENT dataset format (SarSim0)")
 
     def _create_instance_splitter(self, mode: str):
         instance_sampler = ExpectedNumInstanceSampler(
@@ -110,7 +122,10 @@ class ReasoningChronosDataset(torch.utils.data.IterableDataset):
         )
         if mode == "validation":
             instance_sampler = ValidationSplitSampler(min_future=self.prediction_length)
-            
+        
+        # Only split component fields if they exist (SarSim0 format)
+        ts_fields = ["trend", "seasonal", "volatility"] if not self.pretokenized else []
+        
         return InstanceSplitter(
             target_field="target",
             is_pad_field="is_pad",
@@ -120,11 +135,17 @@ class ReasoningChronosDataset(torch.utils.data.IterableDataset):
             past_length=self.context_length,
             future_length=self.prediction_length,
             dummy_value=np.nan,
-            time_series_fields=["trend", "seasonal", "volatility"],
+            time_series_fields=ts_fields,
         )
 
     def preprocess_entry(self, entry: dict, mode: str) -> dict:
-        needed_keys = ["start", "target", "trend", "seasonal", "volatility"]
+        if self.pretokenized:
+            # Pre-tokenized format: only pass GluonTS-compatible fields
+            # reasoning_tokens/mode/context_scale are stored separately in __iter__
+            needed_keys = ["start", "target"]
+        else:
+            needed_keys = ["start", "target", "trend", "seasonal", "volatility"]
+        
         new_entry = {f: entry[f] for f in needed_keys if f in entry}
         
         # Convert start to pd.Period for GluonTS splitting
@@ -149,6 +170,81 @@ class ReasoningChronosDataset(torch.utils.data.IterableDataset):
         return new_entry
 
     def to_hf_format(self, entry: dict) -> dict:
+        if self.pretokenized:
+            return self._to_hf_format_pretokenized(entry)
+        else:
+            return self._to_hf_format_raw(entry)
+
+    def _to_hf_format_pretokenized(self, entry: dict) -> dict:
+        """
+        Handle pre-tokenized GiftEval format.
+        
+        Uses the STORED context_scale from dataset preparation to ensure
+        the encoder tokenization is consistent with the pre-computed
+        reasoning_tokens (which were also tokenized using this same scale).
+        """
+        # Use the stored mode from the dataset
+        mode = entry.get("_mode", np.random.choice(["fast", "reasoning"], p=[0.5, 0.5]))
+        
+        # Context (Encoder Input)
+        past_target = torch.tensor(entry["past_target"]).unsqueeze(0)
+        
+        # CRITICAL FIX: Use the stored context_scale from dataset preparation.
+        # This ensures the encoder scale exactly matches the scale used when
+        # creating reasoning_tokens. context_input_transform doesn't accept
+        # a scale parameter, so we call _input_transform directly.
+        stored_scale = entry.get("_context_scale", None)
+        if stored_scale is not None:
+            # _input_transform expects scale as shape [batch_size] (1D)
+            scale_1d = torch.tensor([stored_scale], dtype=torch.float32)
+            # Truncate to context_length (matching context_input_transform behavior)
+            ctx = past_target
+            if ctx.shape[-1] > self.tokenizer.config.context_length:
+                ctx = ctx[..., -self.tokenizer.config.context_length:]
+            input_ids, attention_mask, _ = self.tokenizer._input_transform(ctx, scale=scale_1d)
+            # Append EOS token (matching context_input_transform behavior)
+            if self.tokenizer.config.use_eos_token and self.tokenizer.config.model_type == "seq2seq":
+                input_ids, attention_mask = self.tokenizer._append_eos_token(input_ids, attention_mask)
+            # scale stays as 1D [batch_size] — same shape as context_input_transform returns
+            scale = scale_1d
+        else:
+            input_ids, attention_mask, scale = self.tokenizer.context_input_transform(past_target)
+        
+        # Prepend control token
+        token_to_add = self.fast_token_id if mode == "fast" else self.reason_token_id
+        control_token = torch.tensor([[token_to_add]], dtype=input_ids.dtype, device=input_ids.device)
+        control_mask = torch.tensor([[True]], dtype=attention_mask.dtype, device=attention_mask.device)
+        
+        input_ids = torch.cat([control_token, input_ids], dim=1)
+        attention_mask = torch.cat([control_mask, attention_mask], dim=1)
+        
+        # Target (Decoder Output) - use pre-computed reasoning_tokens
+        reasoning_tokens = entry["_reasoning_tokens"]
+        
+        if mode == "fast":
+            # For fast mode: tokenize forecast using the SAME stored scale
+            future_target = torch.tensor(entry["future_target"]).unsqueeze(0)
+            labels, labels_mask = self.tokenizer.label_input_transform(future_target, scale)
+        else:
+            # For reasoning mode: use pre-computed reasoning_tokens + EOS
+            token_ids = torch.tensor(reasoning_tokens).long().unsqueeze(0)
+            eos = torch.tensor([[1]]).long()  # EOS token = 1
+            labels = torch.cat([token_ids, eos], dim=1)
+            labels_mask = torch.ones_like(labels, dtype=torch.bool)
+        
+        labels[~labels_mask] = -100  # Ignore in loss
+        
+        return {
+            "input_ids": input_ids.squeeze(0),
+            "attention_mask": attention_mask.squeeze(0),
+            "labels": labels.squeeze(0),
+        }
+
+    def _to_hf_format_raw(self, entry: dict) -> dict:
+        """
+        Handle raw component format (SarSim0).
+        Tokenizes trend/seasonal/volatility components on-the-fly.
+        """
         mode = np.random.choice(["fast", "reasoning"], p=[0.5, 0.5])
         
         # Context (Encoder Input)
@@ -193,9 +289,6 @@ class ReasoningChronosDataset(torch.utils.data.IterableDataset):
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
-        split_transform = self._create_instance_splitter(self.mode) + FilterTransformation(
-             condition=lambda entry: (~np.isnan(entry["past_target"])).sum() > 0
-        )
         
         dataset = self.datasets[0]
         iter_data = iter(dataset)
@@ -205,23 +298,78 @@ class ReasoningChronosDataset(torch.utils.data.IterableDataset):
         samples_yielded = 0
         max_samples = len(dataset) * 2 if self.mode != "training" else float('inf')
         
-        while samples_yielded < max_samples:
-            try:
-                entry = next(iter_data)
-            except StopIteration:
-                if self.mode != "training":
-                    # End iteration for validation after one pass
-                    break
-                iter_data = iter(dataset)
-                entry = next(iter_data)
+        if self.pretokenized:
+            # PRE-TOKENIZED PATH: Use deterministic context/future split
+            # matching dataset preparation (no random InstanceSplitter)
+            while samples_yielded < max_samples:
+                try:
+                    entry = next(iter_data)
+                except StopIteration:
+                    if self.mode != "training":
+                        break
+                    iter_data = iter(dataset)
+                    entry = next(iter_data)
                 
-            entry = self.preprocess_entry(entry, self.mode)
-            
-            for split_entry in split_transform([entry], is_train=(self.mode=="training")):
+                # Deterministic split matching prepare_dataset.py logic
+                target = np.asarray(entry["target"], dtype=self.np_dtype)
+                total_needed = self.context_length + self.prediction_length
+                
+                if len(target) >= total_needed:
+                    context = target[-(total_needed):-self.prediction_length]
+                    future = target[-self.prediction_length:]
+                else:
+                    sp = len(target) - self.prediction_length
+                    if sp <= 0:
+                        continue  # Skip too-short series
+                    context = target[:sp]
+                    future = target[sp:]
+                
+                # Apply dropout to context if training
+                if self.mode == "training" and self.drop_prob > 0:
+                    context = context.copy()
+                    drop_p = np.random.uniform(low=0.0, high=self.drop_prob)
+                    mask = np.random.choice(
+                        [True, False], size=len(context), p=[drop_p, 1 - drop_p]
+                    )
+                    context[mask] = np.nan
+                
+                # Skip if context is all NaN
+                if (~np.isnan(context)).sum() == 0:
+                    continue
+                
+                # Build the split entry matching what to_hf_format expects
+                split_entry = {
+                    "past_target": context,
+                    "future_target": future,
+                    "_reasoning_tokens": entry.get("reasoning_tokens", None),
+                    "_mode": entry.get("mode", None),
+                    "_context_scale": entry.get("context_scale", None),
+                }
+                
                 yield self.to_hf_format(split_entry)
                 samples_yielded += 1
-                if samples_yielded >= max_samples:
-                    break
+        else:
+            # RAW COMPONENT PATH: Use InstanceSplitter (original behavior)
+            split_transform = self._create_instance_splitter(self.mode) + FilterTransformation(
+                 condition=lambda entry: (~np.isnan(entry["past_target"])).sum() > 0
+            )
+            
+            while samples_yielded < max_samples:
+                try:
+                    entry = next(iter_data)
+                except StopIteration:
+                    if self.mode != "training":
+                        break
+                    iter_data = iter(dataset)
+                    entry = next(iter_data)
+                
+                entry = self.preprocess_entry(entry, self.mode)
+                
+                for split_entry in split_transform([entry], is_train=(self.mode=="training")):
+                    yield self.to_hf_format(split_entry)
+                    samples_yielded += 1
+                    if samples_yielded >= max_samples:
+                        break
 
 
 # =============================================================================
