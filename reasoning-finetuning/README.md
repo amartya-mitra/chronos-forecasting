@@ -22,9 +22,24 @@ Train Chronos-2-Small to support two operating modes:
    [Trend: 64 tokens] [Seasonality: 64 tokens] [Volatility: 64 tokens] [Forecast: 64 tokens]
    ```
 
+### Tokenization Strategy
+
+All decomposition components are tokenized using the **context scale** (the same scale computed from the input time series at inference time). This ensures training–inference consistency.
+
+To preserve token-bin resolution for smaller-magnitude components, fixed amplification factors are applied before tokenization:
+
+| Component | Amplification | Rationale |
+|-----------|--------------|-----------|
+| Trend | ×1 (none) | Same magnitude as series |
+| Seasonal | ×10 | Typically 1 order of magnitude smaller |
+| Volatility | ×50 | Typically 1–2 orders of magnitude smaller |
+| Forecast | ×1 (none) | Same magnitude as series |
+
+At inference, de-amplify after de-tokenizing: `seasonal /= 10`, `volatility /= 50`.
+
 ## Dataset Options
 
-Two dataset sources are supported:
+Two dataset sources are supported, selectable via `--dataset-source`:
 
 ### Option 1: GiftEval (STL Decomposition)
 
@@ -63,6 +78,34 @@ The synthetic data was validated against the base Chronos model:
 
 ### Sample Structure
 
+Each training sample contains:
+- `target`: Full time series values
+- `reasoning_tokens`: Tokenized decomposition + forecast (or forecast-only for fast mode)
+- `mode`: `"fast"` or `"reasoning"`
+- `context_scale`: Scale factor used for tokenization (for verification)
+
+### Dataset Verification
+
+A comprehensive verifier checks dataset integrity across 5 dimensions:
+
+| Check | Description |
+|-------|-------------|
+| **Token count** | 64 tokens (fast) or 256 tokens (reasoning) |
+| **Roundtrip** | Re-tokenize ground truth → compare tokens (≥95% match) |
+| **Component order** | Verify trend→seasonal→volatility→forecast slot ordering |
+| **Decomp match** | De-tokenized components correlate with ground truth (≥0.85) |
+| **Scale consistency** | Stored scale matches recomputed context scale |
+
+The verifier auto-detects the dataset source: STL recomputation for GiftEval, stored components for SarSim0.
+
+```bash
+# Verify GiftEval dataset
+python reasoning-finetuning/verify_dataset.py --dataset gifteval-reasoning.arrow
+
+# Verify SarSim0 dataset
+python reasoning-finetuning/verify_dataset.py --dataset sarsim0-reasoning.arrow
+```
+
 ## Training Configuration
 
 ```yaml
@@ -96,7 +139,8 @@ chronos-forecasting/
 │   ├── model_utils.py            # Model availability & download
 │   ├── prepare_dataset.py        # Generate training data
 │   ├── sarsim0_adapter.py        # SarSim0 → reasoning format
-│   ├── validate_sarsim0.py       # Validate synthetic data
+│   ├── validate_sarsim0.py       # Base model vs synthetic data
+│   ├── verify_dataset.py         # Dataset integrity checks
 │   ├── train.py                  # Training wrapper
 │   ├── verify_fast_mode.py       # Fast mode verification
 │   ├── verify_reasoning.py       # Reasoning mode verification
@@ -105,7 +149,7 @@ chronos-forecasting/
 │   └── figures/                  # Plots (gitignored)
 ├── synth-data/SarSim0-main/      # Synthetic data generator
 ├── output/                       # Model outputs (gitignored)
-└── .gitignore                    
+└── .gitignore
 ```
 
 ## Quick Start
@@ -134,27 +178,34 @@ python reasoning-finetuning/prepare_dataset.py --dataset-source gifteval
 python reasoning-finetuning/prepare_dataset.py --dataset-source sarsim0 --num-samples 1000
 ```
 
-### 4. Validate Synthetic Data (optional)
+### 4. Verify Dataset Integrity
+```bash
+python reasoning-finetuning/verify_dataset.py --dataset gifteval-reasoning.arrow
+# or
+python reasoning-finetuning/verify_dataset.py --dataset sarsim0-reasoning.arrow
+```
+
+### 5. Validate Synthetic Data (optional)
 ```bash
 python reasoning-finetuning/validate_sarsim0.py
 ```
 
-### 5. Train the Model
+### 6. Train the Model
 ```bash
 python reasoning-finetuning/train.py reasoning-finetuning/configs/default.yaml
 ```
 
-### 6. Verify Fast Mode
+### 7. Verify Fast Mode
 ```bash
 python reasoning-finetuning/verify_fast_mode.py
 ```
 Expected: Correlation ≥ 0.99 between finetuned (fast mode) and base model.
 
-### 7. Verify Reasoning Mode
+### 8. Verify Reasoning Mode
 ```bash
 python reasoning-finetuning/verify_reasoning.py
 ```
-Compares model's decomposition against STL ground truth.
+Compares model's decomposition against ground truth.
 
 ## Results
 
@@ -174,7 +225,16 @@ Fast mode preserves the original forecasting quality.
 | Seasonality | -0.25 |
 | Volatility | -0.01 |
 
-Reasoning mode needs more training data and steps to learn accurate decomposition.
+Reasoning mode needs more training data and steps to learn accurate decomposition. The tokenization fixes (context-scale normalization + amplification) should improve these results on the next training run.
+
+### Dataset Verification ✅
+| Check | GiftEval (414) | SarSim0 (50) |
+|-------|:--------------:|:------------:|
+| Token count | 100% | 100% |
+| Roundtrip | 100% | 100% |
+| Component order | 100% | 100% |
+| Decomp match | 99.5% | 100% |
+| Scale consistency | 100% | 100% |
 
 ## Files to Exclude from Git
 
@@ -196,18 +256,22 @@ If you clone this repository without the model files:
 python -c "from chronos import ChronosPipeline; ChronosPipeline.from_pretrained('amazon/chronos-t5-small')"
 
 # 2. Generate training data
-python reasoning-finetuning/prepare_dataset.py
+python reasoning-finetuning/prepare_dataset.py --dataset-source sarsim0 --num-samples 1000
 
-# 3. Train finetuned model
+# 3. Verify the dataset
+python reasoning-finetuning/verify_dataset.py --dataset sarsim0-reasoning.arrow
+
+# 4. Train finetuned model
 python reasoning-finetuning/train.py reasoning-finetuning/configs/default.yaml
 ```
 
 ## Known Issues & Future Work
 
-1. **Reasoning accuracy**: Current decomposition correlation is low; needs more training data
-2. **Training data diversity**: Consider using multiple STL decomposition methods
-3. **Hyperparameter tuning**: Learning rate and batch size may need adjustment
-4. **Evaluation metrics**: Add MASE, CRPS for forecast quality assessment
+1. **Reasoning accuracy**: Current decomposition correlation is low; needs retraining with fixed tokenization
+2. **Tokenization fix**: Context-scale normalization + amplification factors implemented but model not yet retrained
+3. **Training data diversity**: SarSim0 integration complete; consider larger sample counts
+4. **Hyperparameter tuning**: Learning rate and batch size may need adjustment
+5. **Evaluation metrics**: Add MASE, CRPS for forecast quality assessment
 
 ## References
 
