@@ -22,19 +22,19 @@ import datasets
 
 from chronos import ChronosPipeline
 from model_utils import (
-    ensure_finetuned_model, 
+    ensure_finetuned_model,
     FINETUNED_MODEL_DIR,
     TRAINING_DATA_PATH,
     FIGURES_DIR,
 )
+# Import amplification factors from single source of truth to avoid silent drift
+from prepare_dataset import SEASONAL_AMP, VOLATILITY_AMP
 
 # Constants
 REASONING_MODE_TOKEN_ID = 4097
 PREDICTION_LENGTH = 64
 CONTEXT_LENGTH = 512
 DECOMPOSITION_LENGTH = 64
-SEASONAL_AMP = 10.0
-VOLATILITY_AMP = 50.0
 
 
 def load_model():

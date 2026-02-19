@@ -183,8 +183,17 @@ class ReasoningChronosDataset(torch.utils.data.IterableDataset):
         the encoder tokenization is consistent with the pre-computed
         reasoning_tokens (which were also tokenized using this same scale).
         """
-        # Use the stored mode from the dataset
-        mode = entry.get("_mode", np.random.choice(["fast", "reasoning"], p=[0.5, 0.5]))
+        # Use the stored mode from the dataset.
+        # A missing/None mode means the dataset was prepared incorrectly — the
+        # pre-computed reasoning_tokens are tied to the mode that was used at
+        # preparation time and we must not silently reassign it.
+        mode = entry.get("_mode")
+        if mode is None:
+            raise ValueError(
+                "Dataset sample is missing the 'mode' field. "
+                "Please regenerate the dataset with prepare_dataset.py to ensure "
+                "every sample has a 'mode' of 'fast' or 'reasoning'."
+            )
         
         # Context (Encoder Input)
         past_target = torch.tensor(entry["past_target"]).unsqueeze(0)
@@ -266,14 +275,20 @@ class ReasoningChronosDataset(torch.utils.data.IterableDataset):
             labels, labels_mask = self.tokenizer.label_input_transform(future_target, scale)
         else:
             # Reasoning mode: Trend + Season + Vol + Forecast
-            def tokenize_component(comp_name):
-                data = torch.tensor(entry[f"future_{comp_name}"]).unsqueeze(0)
+            # Seasonal and volatility must be amplified by the same factors used in
+            # prepare_dataset.py / sarsim0_adapter.py so the token distribution
+            # at training time matches inference de-amplification.
+            from prepare_dataset import SEASONAL_AMP, VOLATILITY_AMP
+
+            def tokenize_raw_component(comp_name, amp_factor=1.0):
+                raw = np.array(entry[f"future_{comp_name}"]) * amp_factor
+                data = torch.tensor(raw, dtype=torch.float32).unsqueeze(0)
                 ids, mask, _ = self.tokenizer._input_transform(data, scale=scale)
                 return ids, mask
 
-            trend_ids, trend_mask = tokenize_component("trend")
-            season_ids, season_mask = tokenize_component("seasonal")
-            vol_ids, vol_mask = tokenize_component("volatility")
+            trend_ids, trend_mask = tokenize_raw_component("trend", amp_factor=1.0)
+            season_ids, season_mask = tokenize_raw_component("seasonal", amp_factor=SEASONAL_AMP)
+            vol_ids, vol_mask = tokenize_raw_component("volatility", amp_factor=VOLATILITY_AMP)
             forecast_ids, forecast_mask = self.tokenizer.label_input_transform(future_target, scale)
             
             labels = torch.cat([trend_ids, season_ids, vol_ids, forecast_ids], dim=1)
@@ -413,15 +428,31 @@ def append_control_tokens(model):
 # =============================================================================
 def train(
     config_path: str,
-    output_dir: str = "./output/reasoning-v4-from-amazon/",
-    dataset_path: str = "gifteval-reasoning.arrow",
+    output_dir: str = None,
+    dataset_path: str = None,
 ):
     """Main training function with critical fixes applied."""
-    
+
     # Load config
     with open(config_path) as fp:
         config = yaml.safe_load(fp)
-    
+
+    # Resolve output_dir: CLI arg overrides config, config overrides default
+    if output_dir is None:
+        output_dir = config.get("output_dir", "./output/reasoning-v4-from-amazon/")
+
+    # Resolve dataset_path: CLI arg overrides config's training_data_paths list
+    if dataset_path is None:
+        paths = config.get("training_data_paths", [])
+        if not paths:
+            raise ValueError(
+                "No dataset_path provided and 'training_data_paths' is empty in config."
+            )
+        dataset_path = paths[0]
+
+    logger.info(f"Output dir:   {output_dir}")
+    logger.info(f"Dataset path: {dataset_path}")
+
     # DO NOT modify n_special_tokens - keep it at 2!
     # Bins remain at positions 2-4095, control tokens are APPENDED at 4096-4097
     logger.info(f"Config n_special_tokens: {config.get('n_special_tokens', 2)} (keeping unchanged)")

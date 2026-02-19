@@ -109,11 +109,14 @@ def _generate_single_decomposed(
     seasonal = seasonal[burn_in:]
     volatility = volatility[burn_in:]
     
-    # Normalize to avoid extreme values
-    combined = _normalize_series(combined)
-    trend = _normalize_series(trend)
-    seasonal = _normalize_series(seasonal)
-    volatility = _normalize_series(volatility)
+    # Normalize the COMBINED series only, then rescale each component by the
+    # same factor so that the additive relationship
+    #   combined = trend + seasonal + volatility
+    # is preserved after normalization.
+    combined, scale_factor = _normalize_series(combined, return_scale=True)
+    trend = trend * scale_factor
+    seasonal = seasonal * scale_factor
+    volatility = volatility * scale_factor
     
     return {
         "target": combined.tolist(),
@@ -216,13 +219,31 @@ def _generate_volatility_component(
     return volatility
 
 
-def _normalize_series(series: np.ndarray) -> np.ndarray:
-    """Normalize series to reasonable range."""
+def _normalize_series(
+    series: np.ndarray, return_scale: bool = False
+) -> np.ndarray:
+    """
+    Normalize series to reasonable range.
+
+    When return_scale=True, returns (normalized_series, scale_factor) so the
+    caller can apply the same factor to sibling components and preserve
+    additive relationships (e.g. combined = trend + seasonal + volatility).
+    """
     series = np.nan_to_num(series, nan=0.0, posinf=10.0, neginf=-10.0)
-    
-    # Clip extreme values
+
+    # Clip extreme values before computing the scale
     series = np.clip(series, -100, 100)
-    
+
+    # Scale so the max absolute value is at most 10
+    abs_max = np.max(np.abs(series))
+    if abs_max > 10.0:
+        scale_factor = 10.0 / abs_max
+        series = series * scale_factor
+    else:
+        scale_factor = 1.0
+
+    if return_scale:
+        return series, scale_factor
     return series
 
 
