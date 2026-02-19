@@ -48,7 +48,7 @@ def load_models():
     if not ensure_base_model():
         raise RuntimeError("Base model not available")
     
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
     
     # Load finetuned model
     print("\nLoading finetuned model...")

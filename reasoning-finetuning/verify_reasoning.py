@@ -33,6 +33,8 @@ REASONING_MODE_TOKEN_ID = 4097
 PREDICTION_LENGTH = 64
 CONTEXT_LENGTH = 512
 DECOMPOSITION_LENGTH = 64
+SEASONAL_AMP = 10.0
+VOLATILITY_AMP = 50.0
 
 
 def load_model():
@@ -40,7 +42,7 @@ def load_model():
     if not ensure_finetuned_model():
         raise RuntimeError("Finetuned model not available")
     
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
     
     print(f"Loading model from: {PROJECT_ROOT / FINETUNED_MODEL_DIR}")
     pipeline = ChronosPipeline.from_pretrained(
@@ -109,11 +111,11 @@ def generate_with_reasoning_mode(pipeline, context: np.ndarray):
     decoded = tokenizer.output_transform(generated.cpu(), scale)
     decoded_values = decoded[0, 0, :].numpy()
     
-    # Split into components
+    # Split into components and de-amplify to recover original scale
     return {
         "trend": decoded_values[:DECOMPOSITION_LENGTH],
-        "seasonal": decoded_values[DECOMPOSITION_LENGTH:2*DECOMPOSITION_LENGTH],
-        "volatility": decoded_values[2*DECOMPOSITION_LENGTH:3*DECOMPOSITION_LENGTH],
+        "seasonal": decoded_values[DECOMPOSITION_LENGTH:2*DECOMPOSITION_LENGTH] / SEASONAL_AMP,
+        "volatility": decoded_values[2*DECOMPOSITION_LENGTH:3*DECOMPOSITION_LENGTH] / VOLATILITY_AMP,
         "forecast": decoded_values[3*DECOMPOSITION_LENGTH:3*DECOMPOSITION_LENGTH+PREDICTION_LENGTH] if len(decoded_values) > 3*DECOMPOSITION_LENGTH else None,
         "raw_tokens": generated,
         "raw_values": decoded_values,

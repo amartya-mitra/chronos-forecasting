@@ -188,7 +188,7 @@ def load_finetuned_model():
     model_path = PROJECT_ROOT / FINETUNED_MODEL_DIR
     pipeline = ChronosPipeline.from_pretrained(
         str(model_path),
-        device_map="mps" if torch.backends.mps.is_available() else "cpu",
+        device_map="cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"),
         torch_dtype=torch.float32,
     )
     return pipeline
@@ -204,7 +204,7 @@ def load_base_model():
     
     pipeline = ChronosPipeline.from_pretrained(
         BASE_MODEL_ID,
-        device_map="mps" if torch.backends.mps.is_available() else "cpu",
+        device_map="cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"),
         torch_dtype=torch.float32,
     )
     return pipeline
