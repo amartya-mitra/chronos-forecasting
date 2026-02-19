@@ -42,7 +42,7 @@ def main():
     
     # Load base model
     print("\nLoading base model (amazon/chronos-t5-small)...")
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
     pipeline = ChronosPipeline.from_pretrained(
         "amazon/chronos-t5-small",
         device_map=device,
