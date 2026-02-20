@@ -7,7 +7,11 @@ It creates samples with pre-computed decomposition (trend, seasonality, volatili
 derived from STL decomposition.
 """
 
+import os
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from functools import partial
+import tqdm
 from pathlib import Path
 
 # Project root
@@ -230,7 +234,7 @@ def main(dataset_source: str = "gifteval", num_samples: int = 500, source_path: 
 
 
 def _prepare_gifteval_dataset(tokenizer, source_path: Path = SOURCE_PATH) -> list:
-    """Prepare dataset from GiftEval source."""
+    """Prepare dataset from GiftEval source (single-threaded, reliable)."""
     # Load source data
     if not source_path.exists():
         print(f"Error: Source data not found at {source_path}")
@@ -240,21 +244,18 @@ def _prepare_gifteval_dataset(tokenizer, source_path: Path = SOURCE_PATH) -> lis
     source_ds = datasets.load_dataset("arrow", data_files=str(source_path), split="train")
     print(f"  Loaded {len(source_ds)} samples")
     
-    # Create reasoning samples
-    print("Generating reasoning samples from GiftEval...")
+    # Create reasoning samples sequentially with progress bar
     reasoning_samples = []
-    
-    for i, sample in enumerate(source_ds):
-        if i % 50 == 0:
-            print(f"  Processing sample {i}/{len(source_ds)}")
-        
+    for i in tqdm.tqdm(range(len(source_ds)), desc="Generating Reasoning Tokens"):
         try:
-            # Alternate between fast and reasoning modes
             mode = "fast" if i % 2 == 0 else "reasoning"
-            reasoning_sample = create_reasoning_sample(sample, tokenizer, mode=mode)
-            reasoning_samples.append(reasoning_sample)
+            sample = source_ds[i]
+            result = create_reasoning_sample(sample, tokenizer, mode=mode)
+            if result:
+                reasoning_samples.append(result)
         except Exception as e:
-            print(f"  Warning: Skipped sample {i}: {e}")
+            if i % 500 == 0:
+                print(f"  Warning: Skipped sample {i}: {e}")
     
     print(f"  Generated {len(reasoning_samples)} samples")
     return reasoning_samples

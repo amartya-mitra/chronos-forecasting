@@ -100,8 +100,8 @@ def main():
     output_path = Path("reasoning-finetuning/data/gifteval-full.arrow")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
-    # 50k is a good "full" size for this finetuning effort
-    limit = 50000 
+    # 10k is a good balance of diversity vs. preparation time
+    limit = 10000 
     
     total = convert_to_arrow(output_path, file_list, limit=limit)
     print(f"Done! Total series collected: {total}")
