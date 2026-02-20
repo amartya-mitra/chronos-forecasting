@@ -45,7 +45,7 @@ def convert_to_arrow(
     )
 
 def main():
-    output_path = Path("gifteval-subset.arrow")
+    output_path = Path("reasoning-finetuning/data/gifteval-subset.arrow")
     limit = 2000 
     
     print(f"Running conversion for SUBSET (limit={limit})...")

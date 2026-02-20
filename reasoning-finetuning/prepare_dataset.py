@@ -44,7 +44,7 @@ def compute_decomposition(series: np.ndarray, period: int = 7) -> dict:
         Dictionary with trend, seasonal, and volatility arrays
     """
     # Clean the series
-    series_clean = pd.Series(series).fillna(method='ffill').fillna(method='bfill').values
+    series_clean = pd.Series(series).ffill().bfill().values
     
     # Ensure minimum length for STL
     if len(series_clean) < 2 * period:

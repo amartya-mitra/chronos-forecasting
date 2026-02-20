@@ -15,8 +15,9 @@ PROJECT_ROOT = Path(__file__).parent.parent
 # Change to project root for relative path resolution
 os.chdir(PROJECT_ROOT)
 
-# Add src to path
+# Add PROJECT_ROOT and src to path
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
+sys.path.insert(0, str(PROJECT_ROOT))
 
 # Import and run the main training function
 from scripts.training.train_reasoning import train

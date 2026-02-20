@@ -52,7 +52,7 @@ def convert_to_arrow(
     )
 
 def main():
-    output_path = Path("gifteval-data.arrow")
+    output_path = Path("reasoning-finetuning/data/gifteval-full.arrow")
     
     limit = 1000 
     if len(sys.argv) > 1 and sys.argv[1] == "--full":

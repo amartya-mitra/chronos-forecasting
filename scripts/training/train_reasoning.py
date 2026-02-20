@@ -538,22 +538,23 @@ def train(
     
     training_args = TrainingArguments(
         output_dir=output_dir,
-        per_device_train_batch_size=16,
-        per_device_eval_batch_size=16,
-        learning_rate=1e-5,              # Lower LR for fine-tuning
-        lr_scheduler_type="cosine",      # Cosine annealing
-        warmup_ratio=0.1,                # 10% warmup
-        max_steps=1000,                  # Extended training
-        save_steps=200,
+        per_device_train_batch_size=config.get("per_device_train_batch_size", 16),
+        per_device_eval_batch_size=config.get("per_device_train_batch_size", 16),
+        learning_rate=config.get("learning_rate", 1e-5),
+        lr_scheduler_type=config.get("lr_scheduler_type", "cosine"),
+        warmup_ratio=config.get("warmup_ratio", 0.1),
+        max_steps=config.get("max_steps", 1000),
+        save_steps=config.get("save_steps", 200),
         logging_steps=50,
-        eval_strategy="steps",           # Enable evaluation
-        eval_steps=200,
+        eval_strategy="steps",
+        eval_steps=config.get("eval_steps", 200),
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
         remove_unused_columns=False,
         label_names=["labels"],
-        report_to="none",                # Disable wandb/tensorboard for now
+        report_to="none",
+        gradient_accumulation_steps=config.get("gradient_accumulation_steps", 1),
     )
     
     def collate_fn(batch):

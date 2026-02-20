@@ -124,7 +124,7 @@ def generate_with_reasoning_mode(pipeline, context: np.ndarray):
 
 def compute_ground_truth_decomposition(series: np.ndarray, period: int = 7) -> dict:
     """Compute STL decomposition for ground truth."""
-    series_clean = pd.Series(series).fillna(method='ffill').fillna(method='bfill').values
+    series_clean = pd.Series(series).ffill().bfill().values
     
     try:
         stl = STL(series_clean, period=period, robust=True)
