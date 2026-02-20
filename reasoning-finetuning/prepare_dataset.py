@@ -157,7 +157,7 @@ def create_reasoning_sample(sample: dict, tokenizer, mode: str = "reasoning") ->
     }
 
 
-def main(dataset_source: str = "gifteval", num_samples: int = 500):
+def main(dataset_source: str = "gifteval", num_samples: int = 500, source_path: str = None, output_path: str = None):
     """
     Generate the reasoning training dataset.
     
@@ -195,49 +195,49 @@ def main(dataset_source: str = "gifteval", num_samples: int = 500):
     if dataset_source == "sarsim0":
         # Use SarSim0 synthetic data
         reasoning_samples = _prepare_sarsim0_dataset(tokenizer, num_samples)
-        output_path = DATA_DIR / "sarsim0-reasoning.arrow"
+        current_output_path = DATA_DIR / "sarsim0-reasoning.arrow"
     else:
         # Use GiftEval dataset (default)
-        reasoning_samples = _prepare_gifteval_dataset(tokenizer)
-        output_path = OUTPUT_PATH
+        current_source_path = Path(source_path) if source_path else SOURCE_PATH
+        reasoning_samples = _prepare_gifteval_dataset(tokenizer, source_path=current_source_path)
+        current_output_path = Path(output_path) if output_path else OUTPUT_PATH
     
     # Ensure output directory exists
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     
     # Save as Arrow dataset
-    print(f"Saving to: {output_path}")
+    print(f"Saving to: {current_output_path}")
     reasoning_ds = datasets.Dataset.from_list(reasoning_samples)
-    reasoning_ds.to_parquet(str(output_path).replace(".arrow", ".parquet"))
+    reasoning_ds.to_parquet(str(current_output_path).replace(".arrow", ".parquet"))
     
     # Convert to Arrow format
     import pyarrow as pa
     import pyarrow.parquet as pq
     
-    table = pq.read_table(str(output_path).replace(".arrow", ".parquet"))
-    with pa.OSFile(str(output_path), 'wb') as f:
+    table = pq.read_table(str(current_output_path).replace(".arrow", ".parquet"))
+    with pa.OSFile(str(current_output_path), 'wb') as f:
         writer = pa.ipc.new_file(f, table.schema)
         writer.write_table(table)
         writer.close()
     
     # Clean up parquet
-    Path(str(output_path).replace(".arrow", ".parquet")).unlink()
+    Path(str(current_output_path).replace(".arrow", ".parquet")).unlink()
     
-    print(f"\n✓ Dataset saved: {output_path}")
+    print(f"\n✓ Dataset saved: {current_output_path}")
     print(f"  Total samples: {len(reasoning_samples)}")
     print(f"  Fast mode: {sum(1 for s in reasoning_samples if s['mode'] == 'fast')}")
     print(f"  Reasoning mode: {sum(1 for s in reasoning_samples if s['mode'] == 'reasoning')}")
 
 
-def _prepare_gifteval_dataset(tokenizer) -> list:
+def _prepare_gifteval_dataset(tokenizer, source_path: Path = SOURCE_PATH) -> list:
     """Prepare dataset from GiftEval source."""
     # Load source data
-    if not SOURCE_PATH.exists():
-        print(f"Error: Source data not found at {SOURCE_PATH}")
-        print("Please run prepare_gifteval_subset.py first")
+    if not source_path.exists():
+        print(f"Error: Source data not found at {source_path}")
         return []
     
-    print(f"Loading source data from: {SOURCE_PATH}")
-    source_ds = datasets.load_dataset("arrow", data_files=str(SOURCE_PATH), split="train")
+    print(f"Loading source data from: {source_path}")
+    source_ds = datasets.load_dataset("arrow", data_files=str(source_path), split="train")
     print(f"  Loaded {len(source_ds)} samples")
     
     # Create reasoning samples

@@ -76,20 +76,16 @@ def main():
         "past_feat_dynamic_real": Sequence(Sequence(Value("float64")), length=7),
     })
 
-    print("Loading Salesforce/GiftEval with explicit features...")
+    print("Loading Salesforce/GiftEval...")
     try:
-        # We use streaming=True to iterate without downloading everything at once if possible 
-        # but features arg is respected in streaming? Yes.
+        # Load without explicit features to avoid casting errors
         ds = datasets.load_dataset(
             "Salesforce/GiftEval", 
             split="train", 
-            streaming=True,
-            features=features
+            streaming=True
         )
     except Exception as e:
-        print(f"Error loading dataset with features: {e}")
-        # Fallback: try without features but maybe catch the specific file causing issue? 
-        # Or maybe the float precision was wrong (32 vs 64).
+        print(f"Error loading dataset: {e}")
         return
 
     convert_to_arrow(output_path, ds, limit=limit)
