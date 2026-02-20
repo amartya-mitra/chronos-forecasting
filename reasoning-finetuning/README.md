@@ -4,14 +4,14 @@ This project extends the **Chronos-2-Small** forecasting model with a "reasoning
 
 ## 🚀 Project Status & Handover
 
-**Current State**: ✅ Code Complete & Verified | ⚠️ Model Needs Retraining
+**Current State**: ✅ Full-Scale Retraining Complete & Verified | ⚠️ Components Need Further Tuning
 
-We have successfully implemented and verified the entire pipeline for fine-tuning Chronos with reasoning capabilities.
+We have successfully implemented and verified the entire pipeline for fine-tuning Chronos with reasoning capabilities, and completed a full-scale retraining on 10,000 diverse time series.
 
 ### Key Achievements
 1.  **Dataset Preparation**:
     *   **Goal**: Create a dataset with 50% "fast mode" (standard forecasting) and 50% "reasoning mode" (decomposition + forecasting) samples.
-    *   **Implementation**: `prepare_dataset.py` handles both real-world data (GiftEval via STL decomposition) and synthetic data (SarSim0 with ground truth components).
+    *   **Implementation**: `prepare_dataset.py` handles both real-world data (GiftEval via STL decomposition) and synthetic data (SarSim0 with ground truth components). A new script `prepare_gifteval_full.py` was created to collect 10,000 diverse series from across the GiftEval dataset chunks.
     *   **Logic**:
         *   **Fast Mode**: `<|fast_mode|>` token → Forecast (64 tokens).
         *   **Reasoning Mode**: `<|reasoning_mode|>` token → Trend (64) → Seasonality (64) → Volatility (64) → Forecast (64).
@@ -19,30 +19,22 @@ We have successfully implemented and verified the entire pipeline for fine-tunin
         *   **Amplification**: Small-magnitude components are amplified before tokenization (Seasonality ×10, Volatility ×50) to preserve resolution.
 
 2.  **Training Pipeline (Critical Fixes)**:
-    *   **Issue**: Initial training attempts revealed a scale mismatch. The `InstanceSplitter` in GluonTS randomly samples context windows, which could have a different scale than the pre-computed reasoning tokens in the dataset.
-    *   **Fix**: We modified `train_reasoning.py` to:
-        *   **Bypass `InstanceSplitter`** for pre-tokenized data.
-        *   Use a **deterministic split** matching the dataset preparation logic.
-        *   **Force the encoder to use the stored `context_scale`** from the dataset, ensuring perfect alignment between the input context and the target reasoning tokens.
-    *   **Verification**: A smoke test confirmed the correct tensor shapes and token alignment.
+    *   **Issue**: Initial training attempts revealed a scale mismatch. The `InstanceSplitter` in GluonTS randomly samples context windows, which could have a different scale than the pre-computed reasoning tokens.
+    *   **Fix**: Modified `train_reasoning.py` to bypass `InstanceSplitter` and force the encoder to use the stored `context_scale` from the dataset, ensuring perfect alignment.
+    *   **Full-Scale Training**: Successfully executed a 5,000-step training run on the A10G GPU using the 10,000 series dataset, dropping eval loss to **2.994** (a 12% improvement over the initial 414-series subset run).
 
-3.  **Verification Suite**:
-    *   **Fast Mode**: `verify_fast_mode.py` confirms the finetuned model matches the base model's performance (Correlation > 0.99).
-    *   **Reasoning Mode**: `verify_reasoning.py` checks decomposition accuracy.
-    *   **Dataset Sanity Check**: `sanity_check_decomposition.py` (NEW) rigorously verifies that the tokenized decomposition components in the dataset match a fresh STL decomposition of the input context. **Result: 99.4% Pass** (only minor edge cases in volatility).
+3.  **Verification Suite & Results**:
+    *   **Fast Mode**: `verify_fast_mode.py` confirms the finetuned model matches the base model's performance (**Correlation 0.9988**).
+    *   **Reasoning Mode**: `verify_reasoning.py` checks decomposition accuracy. The full-scale training improved **Trend correlation from 0.41 to 0.818** (a 2× improvement). Seasonality and volatility require more tuning.
+    *   **Dataset Sanity Check**: `sanity_check_decomposition.py` verifies dataset tokenization. **Result: 99.4% Pass**.
+    *   **Inference**: `inference.py` provides a standalone script to use the reasoning model and properly extract/de-amplify the generated components.
 
 ### Next Steps (Handover)
-The code is fixed and verified. The *model checkpoint* currently saved was trained **before** the final scale consistency fix.
-**Immediate Action**:
-1.  **Retrain the model** using `train_reasoning.py`.
-    ```bash
-    python reasoning-finetuning/train.py reasoning-finetuning/configs/default.yaml
-    ```
-2.  **Verify Reasoning Performance**:
-    ```bash
-    python reasoning-finetuning/verify_reasoning.py
-    ```
-    Expect improved correlation for Seasonality and Volatility due to the fixed scale consistency.
+The code is fixed, verified, and a strong baseline model has been trained on 10K series. 
+**Immediate Actions for Future Work**:
+1.  **Scale Up**: Precompute the dataset on 50K+ series to provide more diversity for learning seasonality and volatility.
+2.  **Longer Training**: Train for 10K-20K steps with warm restarts.
+3.  **Loss Weighting**: Implement component-specific loss weighting in `train_reasoning.py` to emphasize the seasonal and volatility tokens, which currently have lower correlation.
 
 ---
 
