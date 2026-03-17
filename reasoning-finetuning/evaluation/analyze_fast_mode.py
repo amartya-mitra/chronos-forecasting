@@ -9,7 +9,7 @@ import numpy as np
 import torch
 
 # Project root
-PROJECT_ROOT = Path(__file__).parent.parent
+PROJECT_ROOT = Path(__file__).parent.parent.parent  # repo root
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from chronos import ChronosPipeline

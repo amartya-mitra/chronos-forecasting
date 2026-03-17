@@ -9,7 +9,7 @@ base amazon/chronos-t5-small model.
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).parent.parent
+PROJECT_ROOT = Path(__file__).parent.parent.parent  # repo root
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 import torch

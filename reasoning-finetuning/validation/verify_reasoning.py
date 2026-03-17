@@ -10,8 +10,10 @@ import sys
 from pathlib import Path
 
 # Project root
-PROJECT_ROOT = Path(__file__).parent.parent
+FINETUNING_ROOT = Path(__file__).parent.parent  # reasoning-finetuning/
+PROJECT_ROOT = FINETUNING_ROOT.parent           # repo root
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
+sys.path.insert(0, str(FINETUNING_ROOT))        # for model_utils, prepare_dataset
 
 import torch
 import numpy as np
