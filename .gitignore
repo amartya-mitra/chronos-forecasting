@@ -1,4 +1,10 @@
-# Byte-compiled / optimized / DLL files
+# ── Large model / data artifacts (never commit these) ──────────────────────────
+*.safetensors
+*.bin
+reasoning-finetuning/checkpoints/
+reasoning-finetuning/data/*.arrow
+
+# ── Byte-compiled / optimized / DLL files ──────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
