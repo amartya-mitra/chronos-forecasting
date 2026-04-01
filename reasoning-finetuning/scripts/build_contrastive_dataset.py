@@ -42,7 +42,7 @@ import matplotlib.pyplot as plt
 # ── paths ──────────────────────────────────────────────────────────────────────
 SOURCE_PATH = FINETUNING_ROOT / "data" / "sarsim0-10k.arrow"
 OUTPUT_PATH = FINETUNING_ROOT / "data" / "sarsim0-contrastive-v1.arrow"
-FIGURES_DIR = FINETUNING_ROOT / "figures" / "dataset_contrastive_v1"
+FIGURES_DIR = FINETUNING_ROOT / "figures" / "datasets" / "dataset_contrastive_v1"
 
 CONTEXT_LENGTH    = 512
 PREDICTION_LENGTH = 64

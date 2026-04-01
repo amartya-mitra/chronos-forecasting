@@ -48,7 +48,7 @@ except ImportError:
 
 # ── constants ─────────────────────────────────────────────────────────────────
 OUTPUT_PATH = FINETUNING_ROOT / "data"    / "m4monthly-tsf.arrow"
-FIGURES_DIR = FINETUNING_ROOT / "figures" / "dataset_m4monthly_tsf"
+FIGURES_DIR = FINETUNING_ROOT / "figures" / "datasets" / "dataset_m4monthly_tsf"
 
 CONTEXT_LEN     = 36   # months of context  (3 years)
 HORIZON         = 18   # M4 Monthly forecast horizon

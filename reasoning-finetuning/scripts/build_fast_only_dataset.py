@@ -30,7 +30,7 @@ import matplotlib.pyplot as plt
 # ── paths ──────────────────────────────────────────────────────────────────────
 SOURCE_PATH = FINETUNING_ROOT / "data" / "sarsim0-10k.arrow"
 OUTPUT_PATH = FINETUNING_ROOT / "data" / "sarsim0-fast-only.arrow"
-FIGURES_DIR = FINETUNING_ROOT / "figures" / "dataset_fast_only"
+FIGURES_DIR = FINETUNING_ROOT / "figures" / "datasets" / "dataset_fast_only"
 
 CONTEXT_LENGTH    = 512
 PREDICTION_LENGTH = 64

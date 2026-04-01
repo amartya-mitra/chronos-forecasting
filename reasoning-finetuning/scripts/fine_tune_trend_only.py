@@ -272,7 +272,7 @@ def main():
     parser.add_argument("--job-id", default="nojobid")
     job_id = parser.parse_args().job_id
 
-    FIGURES_DIR = FINETUNING_ROOT / "figures"     / f"finetune_trend_only_{job_id}"
+    FIGURES_DIR = FINETUNING_ROOT / "figures" / "finetunes" / f"finetune_trend_only_{job_id}"
     CKPT_DIR    = FINETUNING_ROOT / "checkpoints" / f"finetune-trend-only-{job_id}"
 
     set_seed(SEED)

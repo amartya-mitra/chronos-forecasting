@@ -37,7 +37,7 @@ from chronos import ChronosPipeline
 
 # ── paths ──────────────────────────────────────────────────────────────────
 DATA_PATH    = FINETUNING_ROOT / "data" / "sarsim0-10k.arrow"
-FIGURES_DIR  = FINETUNING_ROOT / "figures" / "eval_baseline_sarsim0"
+FIGURES_DIR  = FINETUNING_ROOT / "figures" / "evals" / "eval_baseline_sarsim0"
 MODEL_ID     = "amazon/chronos-t5-small"
 
 CONTEXT_LENGTH    = 512

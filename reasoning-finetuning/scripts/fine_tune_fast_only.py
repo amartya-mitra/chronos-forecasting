@@ -380,7 +380,7 @@ def main():
     args   = parser.parse_args()
     job_id = args.job_id
 
-    FIGURES_DIR = FINETUNING_ROOT / "figures"     / f"finetune_fast_only_{job_id}"
+    FIGURES_DIR = FINETUNING_ROOT / "figures" / "finetunes" / f"finetune_fast_only_{job_id}"
     CKPT_DIR    = FINETUNING_ROOT / "checkpoints" / f"fast-only-finetune-{job_id}"
 
     set_seed(SEED)

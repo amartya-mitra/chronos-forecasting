@@ -43,7 +43,7 @@ import matplotlib.pyplot as plt
 
 SOURCE_PATH = FINETUNING_ROOT / "data" / "sarsim0-10k.arrow"
 OUTPUT_PATH = FINETUNING_ROOT / "data" / "sarsim0-st.arrow"
-FIGURES_DIR = FINETUNING_ROOT / "figures" / "dataset_st"
+FIGURES_DIR = FINETUNING_ROOT / "figures" / "datasets" / "dataset_st"
 
 CONTEXT_LENGTH    = 512
 PREDICTION_LENGTH = 128   # 64 seasonal + 64 trend

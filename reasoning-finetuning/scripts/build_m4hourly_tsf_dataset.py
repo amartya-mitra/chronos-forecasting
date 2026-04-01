@@ -48,7 +48,7 @@ except ImportError:
 
 # ── constants ─────────────────────────────────────────────────────────────────
 OUTPUT_PATH = FINETUNING_ROOT / "data"    / "m4hourly-tsf.arrow"
-FIGURES_DIR = FINETUNING_ROOT / "figures" / "dataset_m4hourly_tsf"
+FIGURES_DIR = FINETUNING_ROOT / "figures" / "datasets" / "dataset_m4hourly_tsf"
 
 CONTEXT_LEN     = 96   # hours of context  (4 days)
 HORIZON         = 48   # M4 Hourly forecast horizon

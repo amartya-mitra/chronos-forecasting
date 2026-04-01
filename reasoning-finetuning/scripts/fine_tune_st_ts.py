@@ -539,7 +539,7 @@ def main():
     MODE_TOKEN_ID = cfg["token_id"]
     DATA_PATH     = FINETUNING_ROOT / "data" / cfg["data_path"]
 
-    FIGURES_DIR = FINETUNING_ROOT / "figures"     / f"finetune_{variant.lower()}_{job_id}"
+    FIGURES_DIR = FINETUNING_ROOT / "figures" / "finetunes" / f"finetune_{variant.lower()}_{job_id}"
     CKPT_DIR    = FINETUNING_ROOT / "checkpoints" / f"finetune-{variant.lower()}-{job_id}"
 
     # ── Multi-GPU setup (DDP via torchrun, or single-GPU fallback) ──────────────

@@ -46,7 +46,7 @@ N_REASONING   = 6_000   # 60 %
 SEED          = 42
 
 DATA_DIR    = FINETUNING_ROOT / "data"
-FIGURES_DIR = FINETUNING_ROOT / "figures" / "dataset_sarsim0"
+FIGURES_DIR = FINETUNING_ROOT / "figures" / "datasets" / "dataset_sarsim0"
 OUTPUT_PATH = DATA_DIR / "sarsim0-10k.arrow"
 
 

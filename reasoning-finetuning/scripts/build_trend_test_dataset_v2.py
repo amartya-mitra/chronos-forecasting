@@ -33,7 +33,7 @@ import matplotlib.pyplot as plt
 # ── paths ─────────────────────────────────────────────────────────────────────
 SOURCE_PATH = FINETUNING_ROOT / "data" / "sarsim0-10k.arrow"
 OUTPUT_PATH = FINETUNING_ROOT / "data" / "sarsim0-trend-test-v2.arrow"
-FIGURES_DIR = FINETUNING_ROOT / "figures" / "dataset_trend_test_v2"
+FIGURES_DIR = FINETUNING_ROOT / "figures" / "datasets" / "dataset_trend_test_v2"
 
 CONTEXT_LENGTH    = 512
 PREDICTION_LENGTH = 64

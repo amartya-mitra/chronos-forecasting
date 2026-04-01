@@ -27,7 +27,7 @@ import matplotlib.pyplot as plt
 
 SOURCE_PATH = FINETUNING_ROOT / "data" / "sarsim0-10k.arrow"
 OUTPUT_PATH = FINETUNING_ROOT / "data" / "sarsim0-trend-only.arrow"
-FIGURES_DIR = FINETUNING_ROOT / "figures" / "dataset_trend_only"
+FIGURES_DIR = FINETUNING_ROOT / "figures" / "datasets" / "dataset_trend_only"
 
 CONTEXT_LENGTH    = 512
 PREDICTION_LENGTH = 64
