@@ -6,10 +6,12 @@ Loads the M4H-finetuned checkpoint (finetune-m4h-joint-{job_id}) and runs
 both FAST (token 4096) and TSF (token 4102) inference on N_SHOW=5 samples
 drawn from sarsim0-tsf.arrow.
 
-The M4H model's native HORIZON is 48; SarSim0 GT uses HORIZON=64.
-The comparison is made over CMP_LEN = min(48, 64) = 48 steps per part.
+The M4H model's native HORIZON is 48 (used only for FAST mode output length).
+For TSF mode, SEP tokens are forced at SarSim0's native positions (65, 130),
+so each generated segment is 64 steps — matching SarSim0 GT exactly.
+FAST comparison is still over min(48, 64) = 48 steps (model output length).
 
-Outputs saved to figures/cross_eval/m4h_{job_id}_on_sarsim0/:
+Outputs saved to figures/evals/cross_eval/m4h_{job_id}_on_sarsim0/:
   cross_eval_samples.png  — 5-row × 2-col combined FAST | TSF panel
 
 Usage:
@@ -38,21 +40,24 @@ from transformers.generation.logits_process import LogitsProcessor, LogitsProces
 from chronos import ChronosPipeline
 
 # ── constants ──────────────────────────────────────────────────────────────────
-BASE_MODEL   = "amazon/chronos-t5-small"
-DATA_PATH    = FINETUNING_ROOT / "data" / "sarsim0-tsf.arrow"
+BASE_MODEL = "amazon/chronos-t5-small"
+DATA_PATH  = FINETUNING_ROOT / "data" / "sarsim0-tsf.arrow"
 
-# M4H model's trained dimensions
-MODEL_HORIZON   = 48
-MODEL_SEP_POS   = [(49, 4103), (98, 4104)]   # forced positions for TSF
-MODEL_GEN_LEN   = 146                         # 3×48 + 2 SEPs
-MODEL_PRED_LEN  = 144                         # 3×48
+# M4H model's trained HORIZON — used only for FAST mode output length
+MODEL_HORIZON = 48
 
 # SarSim0 data dimensions
 DATA_CONTEXT_LEN = 512
 DATA_HORIZON     = 64                         # GT parts are 3×64
 
-# Comparison length: we compare first CMP_LEN steps of each segment
-CMP_LEN = min(MODEL_HORIZON, DATA_HORIZON)    # = 48
+# TSF generation uses DATA-native SEP positions so output aligns with GT exactly
+GEN_SEP_POS  = [(65, 4103), (130, 4104)]      # SarSim0-native
+GEN_GEN_LEN  = 194                            # 3×64 + 2 SEPs
+GEN_PRED_LEN = 192                            # 3×64
+GEN_SEG      = DATA_HORIZON                   # 64 steps per segment
+
+# FAST comparison: model generates MODEL_HORIZON steps, GT has DATA_HORIZON steps
+FAST_CMP_LEN = MODEL_HORIZON                  # = 48
 
 N_SHOW      = 5
 SEED        = 42
@@ -124,7 +129,7 @@ def load_model(ckpt_dir: Path, device: torch.device) -> ChronosPipeline:
 @torch.no_grad()
 def predict_fast(pipeline: ChronosPipeline, row: dict,
                  device: torch.device) -> np.ndarray:
-    """FAST mode → returns (MODEL_HORIZON,) array in original units."""
+    """FAST mode → returns (MODEL_HORIZON=48,) array in original units."""
     model_cfg = pipeline.model.config
     ctx = torch.tensor(row["context"]).unsqueeze(0)
     tids, amask, scale = pipeline.tokenizer.context_input_transform(ctx)
@@ -149,18 +154,20 @@ def predict_fast(pipeline: ChronosPipeline, row: dict,
 @torch.no_grad()
 def predict_tsf(pipeline: ChronosPipeline, row: dict,
                 device: torch.device) -> np.ndarray:
-    """TSF mode → returns (MODEL_PRED_LEN=144,) context-normalised array (3×48)."""
+    """TSF mode → returns (GEN_PRED_LEN=192,) context-normalised array (3×64).
+    SEPs forced at SarSim0-native positions (65, 130) so each segment is 64 steps,
+    matching SarSim0 GT boundaries exactly."""
     model_cfg = pipeline.model.config
     ctx = torch.tensor(row["context"]).unsqueeze(0)
     tids, amask, scale = pipeline.tokenizer.context_input_transform(ctx)
 
-    lp  = LogitsProcessorList([SEPForcer(MODEL_SEP_POS)])
+    lp  = LogitsProcessorList([SEPForcer(GEN_SEP_POS)])
     raw = pipeline.model.model.generate(
         input_ids=tids.to(device),
         attention_mask=amask.to(device),
         logits_processor=lp,
         generation_config=GenerationConfig(
-            min_new_tokens=MODEL_GEN_LEN, max_new_tokens=MODEL_GEN_LEN,
+            min_new_tokens=GEN_GEN_LEN, max_new_tokens=GEN_GEN_LEN,
             do_sample=True, num_return_sequences=NUM_SAMPLES,
             decoder_start_token_id=4102,
             eos_token_id=model_cfg.eos_token_id,
@@ -169,11 +176,11 @@ def predict_tsf(pipeline: ChronosPipeline, row: dict,
             top_k=model_cfg.top_k, top_p=model_cfg.top_p,
         ),
     )
-    seg = MODEL_HORIZON
+    seg = GEN_SEG  # 64
     raw = raw[:, 1:]   # strip mode token
-    # strip SEPs: [part0(48) | SEP(1) | part1(48) | SEP(1) | part2(48)]
+    # strip SEPs: [part0(64) | SEP(1) | part1(64) | SEP(1) | part2(64)]
     raw_bins = torch.cat([raw[:, :seg], raw[:, seg+1:2*seg+1], raw[:, 2*seg+2:3*seg+2]], dim=1)
-    raw_bins = raw_bins.reshape(1, NUM_SAMPLES, MODEL_PRED_LEN)
+    raw_bins = raw_bins.reshape(1, NUM_SAMPLES, GEN_PRED_LEN)
     return pipeline.tokenizer.output_transform(raw_bins.cpu(), scale).median(dim=1).values[0].numpy()
 
 
@@ -187,8 +194,8 @@ def make_plot(rows: list, fast_preds: list, tsf_preds: list,
     fig, axes = plt.subplots(n, 2, figsize=(22, 3.5 * n))
     fig.suptitle(
         f"Cross-generalization: M4H-finetuned model (job {job_id}) → SarSim0 data\n"
-        f"Left: FAST mode (token 4096, predicts {MODEL_HORIZON} steps, GT={DATA_HORIZON} steps, overlap={CMP_LEN})\n"
-        f"Right: TSF mode (token 4102, predicts 3×{MODEL_HORIZON} steps, GT=3×{DATA_HORIZON} steps)",
+        f"Left: FAST mode (token 4096, predicts {MODEL_HORIZON} steps, GT={DATA_HORIZON} steps, compare={FAST_CMP_LEN})\n"
+        f"Right: TSF mode (token 4102, SEPs at SarSim0-native positions, predicts 3×{GEN_SEG} = GT)",
         fontsize=11, fontweight="bold",
     )
 
@@ -207,10 +214,10 @@ def make_plot(rows: list, fast_preds: list, tsf_preds: list,
         ax.plot(pred_x, fast_pred, color=_PRED_COL, lw=1.5, ls="--",
                 label=f"Pred ({MODEL_HORIZON} steps)")
 
-        cmp_mae = float(np.mean(np.abs(fast_pred[:CMP_LEN] - gt_fast[:CMP_LEN])))
+        cmp_mae = float(np.mean(np.abs(fast_pred[:FAST_CMP_LEN] - gt_fast[:FAST_CMP_LEN])))
         ax.axvline(DATA_CONTEXT_LEN - 0.5, color="black", lw=0.8, ls="--", alpha=0.4)
-        ax.axvline(DATA_CONTEXT_LEN + CMP_LEN - 0.5, color="grey", lw=0.7, ls=":", alpha=0.5)
-        ax.set_title(f"{row['item_id']}  FAST  MAE[:{CMP_LEN}]={cmp_mae:.4f}",
+        ax.axvline(DATA_CONTEXT_LEN + FAST_CMP_LEN - 0.5, color="grey", lw=0.7, ls=":", alpha=0.5)
+        ax.set_title(f"{row['item_id']}  FAST  MAE[:{FAST_CMP_LEN}]={cmp_mae:.4f}",
                      fontsize=8, loc="left", pad=2)
         if i == 0:
             ax.legend(fontsize=7, loc="upper left", framealpha=0.7)
@@ -224,20 +231,17 @@ def make_plot(rows: list, fast_preds: list, tsf_preds: list,
         ax.fill_between(ctx_x, row["context"], alpha=0.05, color=_CTX_COL)
         ax.plot(ctx_x, row["context"], color=_CTX_COL, lw=0.5, label="Context")
 
-        total_mae_norm = float(np.mean(np.abs(
-            tsf_pred[:MODEL_HORIZON * 3] - row["target"][:MODEL_HORIZON * 3]
-        )))
+        # Full comparison: GEN_SEG == DATA_HORIZON == 64, no truncation needed
+        total_mae_norm = float(np.mean(np.abs(tsf_pred - row["target"])))
 
         for j in range(3):
             gt_j   = row["target"][j * DATA_HORIZON:(j + 1) * DATA_HORIZON] * inv[j]
-            pred_j = tsf_pred[j * MODEL_HORIZON:(j + 1) * MODEL_HORIZON]    * inv[j]
-            gt_x_j   = np.arange(DATA_CONTEXT_LEN + j * DATA_HORIZON,
-                                  DATA_CONTEXT_LEN + (j + 1) * DATA_HORIZON)
-            pred_x_j = np.arange(DATA_CONTEXT_LEN + j * MODEL_HORIZON,
-                                  DATA_CONTEXT_LEN + (j + 1) * MODEL_HORIZON)
-            ax.plot(gt_x_j,   gt_j,   color=PART_COLS[j], lw=1.8,
-                    label=f"GT {PART_NAMES[j]}")
-            ax.plot(pred_x_j, pred_j, color=_PRED_COL, lw=1.4, ls="--", alpha=0.85)
+            pred_j = tsf_pred[j * GEN_SEG:(j + 1) * GEN_SEG] * inv[j]
+            # pred and GT x-ranges are identical since GEN_SEG == DATA_HORIZON
+            seg_x  = np.arange(DATA_CONTEXT_LEN + j * DATA_HORIZON,
+                                DATA_CONTEXT_LEN + (j + 1) * DATA_HORIZON)
+            ax.plot(seg_x, gt_j,   color=PART_COLS[j], lw=1.8, label=f"GT {PART_NAMES[j]}")
+            ax.plot(seg_x, pred_j, color=_PRED_COL, lw=1.4, ls="--", alpha=0.85)
 
         ax.axvline(DATA_CONTEXT_LEN - 0.5, color="black", lw=0.8, ls="--", alpha=0.4)
         ax.set_title(f"{row['item_id']}  TSF  MAE(norm)={total_mae_norm:.4f}",
@@ -272,8 +276,9 @@ def main():
     print(f"Cross-eval: M4H-finetuned (job {job_id}) → SarSim0 data")
     print(f"  Checkpoint     : {CKPT_DIR}")
     print(f"  Data           : sarsim0-tsf.arrow  (CONTEXT={DATA_CONTEXT_LEN}, H={DATA_HORIZON})")
-    print(f"  Model native   : HORIZON={MODEL_HORIZON}  SEPs={MODEL_SEP_POS}")
-    print(f"  Compare length : {CMP_LEN} steps per segment")
+    print(f"  Model native   : HORIZON={MODEL_HORIZON}  (FAST only)")
+    print(f"  TSF SEPs       : {GEN_SEP_POS}  (SarSim0-native, gen_len={GEN_GEN_LEN})")
+    print(f"  FAST compare   : {FAST_CMP_LEN} steps  |  TSF compare: full {GEN_SEG} steps/segment")
     print(f"  Device         : {device}")
     print("=" * 65)
 
