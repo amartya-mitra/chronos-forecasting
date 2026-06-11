@@ -1,0 +1,51 @@
+==========================================================================================
+SWEEP — M4 Weekly  (Phase 2 dataset sweep)
+  Checkpoint:  sweep-m4weekly-500steps.pt  (step 500)
+  Dataset:     m4weekly-tsf.arrow  (72 held-out val series, 80/20 split seed=42)
+  Context:     80 pts  |  Pred: 13 pts  |  MASE period: 52
+  STL params:  min_period=4, max_period=80  (n_cycles=1)
+  cycles_available = 1.54  (< 2.0: borderline, n_cycles=1 used)
+  Inference ceiling: 0.80 (fixed at end-of-training, step=500/500)
+==========================================================================================
+
+1. MAIN COMPARISON TABLE  (on 72 held-out val series)
+
+Metric          Zero-shot        w/prefix        Δ(%)
+─────────  ──────────────  ──────────────  ──────────
+MSE             624364.98       577441.85       -7.5%
+MAE              345.6753        310.4780     -10.18%
+MASE               0.6308          0.5629     -10.77%
+Improv%                 —           63.9%           —
+
+  ΔMASE (w/prefix vs zero-shot): -10.77%
+
+──────────────────────────────────────────────────────────────────────────────────────────
+2. PER-SERIES MSE DISTRIBUTION
+
+  Stat           Zero-shot        w/prefix
+  ────────  ──────────────  ──────────────
+  mean           624364.98       577441.85
+  p95           3418751.23      1208050.06
+  max          16603015.00     17836322.00
+
+──────────────────────────────────────────────────────────────────────────────────────────
+3. FIX 1B FILTER RATE (val series)
+  Series with resid_sig > 0.4: 0/72 (0.0%)
+
+──────────────────────────────────────────────────────────────────────────────────────────
+4. FIX 2 CEILING ACTIVATION (inference, ceiling=0.80 fixed)
+  w/m4weekly-pfx:  fired=23.34%  pre_ceil_mean=0.4746
+  (Healthy range: pre_ceil_mean ~0.40–0.70; should match training value)
+
+──────────────────────────────────────────────────────────────────────────────────────────
+5. PER-SERIES IMPROVEMENT RATE (MAE)
+  w/m4weekly-pfx: 46/72 improved  (63.9%)
+
+──────────────────────────────────────────────────────────────────────────────────────────
+VERDICT
+  w/m4weekly-pfx vs zero-shot: HELPS  (ΔMASE=-10.77%)
+  → In-domain training SUCCEEDED on M4 Weekly
+
+==========================================================================================
+DONE.
+==========================================================================================

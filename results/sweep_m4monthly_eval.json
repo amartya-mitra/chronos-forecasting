@@ -1,0 +1,32 @@
+{
+  "dataset": "m4monthly",
+  "ckpt": "/mnt/home/amitra/chronos-forecasting/reasoning-finetuning/checkpoints/sweep-m4monthly-2000steps.pt",
+  "n_val": 2000,
+  "agg_zero_shot": {
+    "mse": 1641326.5302883473,
+    "mae": 652.8486073529721,
+    "mase": 1.2105444202851854
+  },
+  "agg_prefix": {
+    "mse": 744334.5058598223,
+    "mae": 391.2371339030266,
+    "mase": 0.7274380852009835
+  },
+  "delta_mase_pct": -39.90818734023734,
+  "improv_pct": 86.8,
+  "mse_dist": {
+    "base": {
+      "mean": 1641326.5302883473,
+      "p95": 6866303.724999998,
+      "max": 96397984.0
+    },
+    "pfx": {
+      "mean": 744334.5058598223,
+      "p95": 3167771.4749999996,
+      "max": 74117152.0
+    }
+  },
+  "fix1b_rate": 0.014,
+  "ceil_fire": 0.4483032200733821,
+  "pre_mean": 0.6783908221324285
+}

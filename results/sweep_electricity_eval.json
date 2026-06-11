@@ -1,0 +1,38 @@
+{
+  "dataset": "electricity",
+  "ckpt": "/mnt/home/amitra/chronos-forecasting/reasoning-finetuning/checkpoints/sweep-electricity-500steps.pt",
+  "n_val": 74,
+  "context_len": 336,
+  "pred_len": 24,
+  "mase_period": 24,
+  "max_period": 84,
+  "cycles_available": 14.0,
+  "period24_pct": 33.97129186602871,
+  "agg_zero_shot": {
+    "mse": 3182265.3378850995,
+    "mae": 326.18332381184035,
+    "mase": 0.9002385208165595
+  },
+  "agg_prefix": {
+    "mse": 1263493.6222861393,
+    "mae": 235.20866064445391,
+    "mase": 0.8004011662885684
+  },
+  "delta_mase_pct": -11.09010025892181,
+  "improv_pct": 58.108108108108105,
+  "mse_dist": {
+    "base": {
+      "mean": 3182265.3378850995,
+      "p95": 1854407.618749997,
+      "max": 217833808.0
+    },
+    "pfx": {
+      "mean": 1263493.6222861393,
+      "p95": 579276.1749999999,
+      "max": 86391272.0
+    }
+  },
+  "fix1b_rate": 0.0,
+  "ceil_fire": 0.06560413526992002,
+  "pre_mean": 0.1710814101000627
+}

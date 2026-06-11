@@ -1,0 +1,64 @@
+==========================================================================================
+PHASE 2 TASK 2 — GiftEval evaluation with GiftEval-trained prefix
+  SarSim0 ckpt:  run-2000steps-2000.pt  (step 2000)
+  GiftEval ckpt: gifteval-1000steps.pt  (step 1000)
+  Dataset:       m4hourly-tsf.arrow  (83 held-out val series, 80/20 split seed=42)
+  Preprocessing: min_period=6 (Fix 1a), resid_sig>0.4→zeros (Fix 1b)
+  Inference ceiling: 0.80 (fixed at end-of-training) for both prefix checkpoints
+==========================================================================================
+
+1. MAIN COMPARISON TABLE  (on 83 held-out val series)
+
+Metric           GiftEval          GiftEval          GiftEval
+                zero-shot     w/SarSim0-pfx    w/GiftEval-pfx
+─────────  ──────────────  ────────────────  ────────────────
+MSE            1674952.24       14524594.80         876692.04
+MAE              415.3749         1190.2245          265.9484
+MASE               1.6565           19.1273            1.2181
+Improv%                 —              2.4%             77.1%
+
+  ΔMASE (SarSim0-pfx vs zero-shot): +1054.70%
+  ΔMASE (GiftEval-pfx vs zero-shot): -26.46%
+  ΔMASE (GiftEval-pfx vs SarSim0-pfx): -93.63%
+
+  [Reference from Phase 2 Task 1 — full 414-series eval, not val split]
+                  zero-shot     w/SarSim0-pfx
+  MSE               2389428         659470080
+  MASE                 1.61             27.62
+
+──────────────────────────────────────────────────────────────────────────────────────────
+2. PER-SERIES MSE DISTRIBUTION
+
+  Stat           zero-shot     w/SarSim0-pfx    w/GiftEval-pfx
+  ────────  ──────────────  ────────────────  ────────────────
+  mean          1674952.24       14524594.80         876692.04
+  p95           8978904.45       52762025.60        1858703.94
+  max          58947504.00      425379488.00       52658432.00
+
+──────────────────────────────────────────────────────────────────────────────────────────
+3. FIX 1B FILTER RATE (val series)
+  Series with resid_sig > 0.4: 0/83 (0.0%)
+  (SarSim0 reference: 2.9%;  M4H expected: < 2.9%, clean real-world data)
+
+──────────────────────────────────────────────────────────────────────────────────────────
+4. FIX 2 CEILING ACTIVATION (inference, ceiling=0.80 fixed)
+  SarSim0-pfx:   fired=35.41%  pre_ceil_mean=0.5839
+  GiftEval-pfx:  fired=18.40%  pre_ceil_mean=0.4227
+  (Cross-domain SarSim0 reference: fired=98.6%, pre_ceil=0.9912)
+  Key diagnostic: GiftEval-pfx pre_ceil_mean should be ~0.40–0.50 (matching training) if no collapse
+
+──────────────────────────────────────────────────────────────────────────────────────────
+5. PER-SERIES IMPROVEMENT RATE (MAE, prefix vs zero-shot)
+  SarSim0-pfx:  2/83 improved  (2.4%)
+  GiftEval-pfx: 64/83 improved  (77.1%)
+
+──────────────────────────────────────────────────────────────────────────────────────────
+VERDICT
+  SarSim0-pfx vs zero-shot:   HURTS  (ΔMASE=+1054.70%)
+  GiftEval-pfx vs zero-shot:  HELPS  (ΔMASE=-26.46%)
+  GiftEval-pfx vs SarSim0-pfx: BETTER  (ΔMASE=-93.63%)
+  → In-domain training SUCCEEDED: GiftEval-pfx improves over zero-shot
+
+==========================================================================================
+DONE.
+==========================================================================================

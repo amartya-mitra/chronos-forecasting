@@ -1,0 +1,37 @@
+{
+  "dataset": "m4weekly",
+  "ckpt": "/mnt/home/amitra/chronos-forecasting/reasoning-finetuning/checkpoints/sweep-m4weekly-500steps.pt",
+  "n_val": 72,
+  "context_len": 80,
+  "pred_len": 13,
+  "mase_period": 52,
+  "max_period": 80,
+  "cycles_available": 1.5384615384615385,
+  "agg_zero_shot": {
+    "mse": 624364.9840815862,
+    "mae": 345.6753077705701,
+    "mase": 0.630843625993463
+  },
+  "agg_prefix": {
+    "mse": 577441.8475175963,
+    "mae": 310.47795519563886,
+    "mase": 0.5629145909339954
+  },
+  "delta_mase_pct": -10.767967252184215,
+  "improv_pct": 63.888888888888886,
+  "mse_dist": {
+    "base": {
+      "mean": 624364.9840815862,
+      "p95": 3418751.225000004,
+      "max": 16603015.0
+    },
+    "pfx": {
+      "mean": 577441.8475175963,
+      "p95": 1208050.0562500006,
+      "max": 17836322.0
+    }
+  },
+  "fix1b_rate": 0.0,
+  "ceil_fire": 0.23335691099917447,
+  "pre_mean": 0.47462808313193144
+}

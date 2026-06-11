@@ -1,0 +1,90 @@
+==========================================================================================
+PHASE 2 — CROSS-DATASET EVALUATION  (SarSim0-trained prefix → GiftEval M4 Hourly)
+  Checkpoint: run-2000steps-2000.pt  (step 2000)
+  Dataset:    m4hourly-tsf.arrow  (414 series)
+  Preprocessing: min_period=6 (Fix 1a), resid_sig>0.4→zeros (Fix 1b)
+  Inference ceiling: 0.80 (fixed, end-of-training)
+==========================================================================================
+
+DATASET NOTE — Decomposition source
+  The m4hourly-tsf.arrow file does NOT contain pre-computed trend/seasonal/volatility
+  columns for the context window.  The schema is:
+      item_id, mode, context (96 pts), target (144 pts), s_first, s_second, s_third
+  The 'target' column encodes [trend_fc(48) | seasonal_fc(48) | raw_future(48)] —
+  decompositions of the FORECAST window only, which are not usable by PrefixGenerator
+  (which requires context-window decompositions as input).
+
+  What was done instead: STL decomposition computed on-the-fly on the 'context'
+  column (96 pts) using the same detect_periods + stl_decompose pipeline as SarSim0
+  training, with Fix 1a (min_period=6) applied.
+
+  Key distributional difference vs. SarSim0 training:
+    SarSim0 context: 512 pts, synthetic, normalised to unit scale
+    M4H context:      96 pts, real-world hourly, raw scale (values O(100–10000))
+  The prefix was never trained on 96-pt context decompositions at real-world scale.
+  This context-length and scale mismatch is a direct contributing factor to the
+  attention collapse documented in §4 and §6(c) below.
+==========================================================================================
+
+1. MAIN COMPARISON TABLE
+
+Metric     SarSim0 zero-shot   SarSim0 w/prefix   GiftEval zero-shot   GiftEval w/prefix
+────────  ──────────────────  ─────────────────  ───────────────────  ──────────────────
+MSE                   3.3456             3.3283         2389428.5993      659470080.6948
+MAE                   0.6714             0.6724             321.9873           3570.9118
+MASE                  0.6545             0.6511               1.6088             27.6185
+Improv%                    —              50.4%                    —                1.2%
+
+──────────────────────────────────────────────────────────────────────────────────────────
+2. PER-SERIES MSE DISTRIBUTION
+
+  Stat          GiftEval zero-shot    GiftEval w/prefix
+  ──────────  ────────────────────  ───────────────────
+  mean                2389428.5993       659470080.6948
+  p95                 2942736.6500       187874339.2000
+  max               368790144.0000    204995035136.0000
+
+──────────────────────────────────────────────────────────────────────────────────────────
+3. FIX 1B FILTER RATE ON GIFTEVAL
+  Series with resid_sig > 0.4: 0/414 (0.0%)
+  (SarSim0 reference: 2.9%)
+
+──────────────────────────────────────────────────────────────────────────────────────────
+4. FIX 2 CEILING ACTIVATION RATE (inference, ceiling=0.80 fixed)
+  Fired: 98.57% of attention computations
+  Pre-ceiling mean pfx_total: 0.9912
+
+──────────────────────────────────────────────────────────────────────────────────────────
+5. PER-SERIES IMPROVEMENT RATE (MAE, prefix vs zero-shot)
+  5/414 series improved  (1.2%)
+
+──────────────────────────────────────────────────────────────────────────────────────────
+GENERALISATION VERDICT
+  SarSim0:  prefix HELPS  (ΔMASE=-0.52%)
+  GiftEval: prefix HURTS  (ΔMASE=+1616.75%)
+  → Cross-domain transfer: NEGATIVE (decomposition mismatch)
+
+══════════════════════════════════════════════════════════════════════════════════════════
+6. OUTLIER DIAGNOSIS  (prefix hurts overall — diagnosing worst 5%)
+══════════════════════════════════════════════════════════════════════════════════════════
+
+  95th-pct MSE threshold: 187874339.2000
+  Outlier count: 21
+
+  (a) PERIOD DISTRIBUTION
+    Period    #out      #all    f_out    f_all   ratio
+  ────────  ──────  ────────  ───────  ───────  ──────
+        24      21       409    1.000    0.601    1.67 ←
+  Over-represented (>1.5×): p=24(1.67×)
+
+  (b) RESIDUAL RATIO
+  Outliers: mean=0.0136  std=0.0078  frac>0.5=0.000
+  All:      mean=0.0296  std=0.0477  ratio=0.46×
+
+  (c) LAYER-5 PREFIX ATTENTION  (encoder pass for outlier series)
+  Outliers: mean=1.0000  std=0.0000
+  All:      mean=1.0000  std=0.0001
+
+==========================================================================================
+DONE.
+==========================================================================================
