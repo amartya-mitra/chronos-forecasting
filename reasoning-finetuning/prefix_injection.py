@@ -35,7 +35,8 @@ import torch.nn as nn
 
 # ── internal: per-layer patched forward factory ───────────────────────────────
 
-def _make_patched_forward(attn, P_K: torch.Tensor, P_V: torch.Tensor):
+def _make_patched_forward(attn, P_K: torch.Tensor, P_V: torch.Tensor,
+                          training_state=None):
     """
     Return a replacement forward() for one T5Attention module.
 
@@ -45,6 +46,21 @@ def _make_patched_forward(attn, P_K: torch.Tensor, P_V: torch.Tensor):
     The replacement is stored as a plain instance attribute on `attn`,
     so nn.Module.__call__ routes through it without any special descriptor
     magic; `attn` is captured in the closure for attribute access.
+
+    training_state (optional dict):
+        When provided, applies an annealing prefix-attention ceiling to
+        prevent attention collapse during training.  Not applied during
+        inference (training_state=None).
+
+        Required keys:
+            'current_step'  (int)  : current training step
+            'total_steps'   (int)  : total planned steps (for annealing)
+
+        Optional keys populated by this closure:
+            'ceiling_fired_accumulator' (list): appended with per-call
+                firing rate (fraction of query positions where ceiling fired)
+            'pfx_total_pre_ceil_accumulator' (list): appended with per-call
+                mean prefix attention mass BEFORE clamping (diagnostic)
     """
     prefix_total = P_K.shape[1]   # 3 * prefix_len_per_component
 
@@ -186,6 +202,53 @@ def _make_patched_forward(attn, P_K: torch.Tensor, P_V: torch.Tensor):
         if layer_head_mask is not None:
             attn_weights = attn_weights * layer_head_mask
 
+        # ── Annealing prefix-attention ceiling (training only) ─────────────
+        # Prevents attention collapse (pfx_total→1.0) seen in outlier series.
+        # Only active when training_state is provided; inference is unchanged.
+        #
+        # CEILING(step) = min(0.5 + 0.3 × (step / total_steps), 0.8)
+        #   step=0:    0.50  (protective — blocks pathological cases)
+        #   step=1000: 0.65  (relaxing — prefix has learned useful content)
+        #   step=2000: 0.80  (permissive)
+        if training_state is not None:
+            cur_step   = training_state.get('current_step', 0)
+            tot_steps  = max(training_state.get('total_steps', 2000), 1)
+            ceiling    = min(0.5 + 0.3 * (cur_step / tot_steps), 0.8)
+
+            # Split weights: (b, h, q, prefix_total) and (b, h, q, seq_len)
+            pfx_w  = attn_weights[..., :prefix_total]
+            inp_w  = attn_weights[..., prefix_total:]
+
+            # Total prefix attention mass per query position: (b, h, q, 1)
+            pfx_mass = pfx_w.sum(dim=-1, keepdim=True)
+
+            # Track pre-ceiling values for diagnostics
+            pre_ceil_acc = training_state.get('pfx_total_pre_ceil_accumulator')
+            if pre_ceil_acc is not None:
+                pre_ceil_acc.append(pfx_mass.detach().mean().item())
+
+            # Per-position scale: clamp where mass > ceiling
+            scale = torch.where(
+                pfx_mass > ceiling,
+                ceiling / (pfx_mass + 1e-9),
+                torch.ones_like(pfx_mass),
+            )
+            pfx_w_clamped = pfx_w * scale
+
+            # Redistribute remaining attention mass to input tokens
+            inp_sum              = inp_w.sum(dim=-1, keepdim=True) + 1e-9
+            remaining            = 1.0 - pfx_w_clamped.sum(dim=-1, keepdim=True)
+            inp_w_boosted        = inp_w * (remaining / inp_sum)
+
+            # Track ceiling firing rate (fraction of positions clamped)
+            fired_acc = training_state.get('ceiling_fired_accumulator')
+            if fired_acc is not None:
+                fired_acc.append(
+                    (pfx_mass.detach() > ceiling).float().mean().item()
+                )
+
+            attn_weights = torch.cat([pfx_w_clamped, inp_w_boosted], dim=-1)
+
         # ── Output projection ──────────────────────────────────────────────
         attn_output = torch.matmul(attn_weights, value_states)
         attn_output = attn_output.transpose(1, 2).contiguous()
@@ -209,6 +272,7 @@ def inject_prefix(
     seasonal=None,
     residual=None,
     prefix_kvs=None,
+    training_state=None,
 ):
     """
     Monkey-patch the 6 encoder T5Attention layers to prepend prefix KVs.
@@ -218,11 +282,14 @@ def inject_prefix(
     Inference mode (gradient-free):
         inject_prefix(chronos_model, prefix_generator, trend, seasonal, residual)
         PrefixGenerator is called under torch.no_grad(); KVs are detached.
+        No ceiling applied (training_state=None).
 
     Training mode (gradient-tracked):
         prefix_kvs = prefix_generator(trend, seasonal, residual)   # outside no_grad
-        inject_prefix(chronos_model, prefix_generator, prefix_kvs=prefix_kvs)
+        inject_prefix(chronos_model, prefix_generator,
+                      prefix_kvs=prefix_kvs, training_state=training_state)
         KVs are NOT detached; gradients flow back to PrefixGenerator during backward.
+        Annealing ceiling active when training_state is provided.
 
     Idempotent: calling again replaces the previous patch without double-saving
     the original forward.
@@ -234,6 +301,9 @@ def inject_prefix(
                                    (batch, context_length)  [inference mode only]
         prefix_kvs:       pre-computed list of (P_K, P_V) tensors with grad_fn
                           [training mode only; mutually exclusive with trend/seasonal/residual]
+        training_state:   optional mutable dict enabling the annealing prefix-
+                          attention ceiling (see _make_patched_forward docstring).
+                          Must contain 'current_step' and 'total_steps'.
 
     Returns:
         prefix_kvs: list of 6 (P_K, P_V) tensors
@@ -270,7 +340,8 @@ def inject_prefix(
         if detach:
             P_K, P_V = P_K.detach(), P_V.detach()
 
-        attn.forward = _make_patched_forward(attn, P_K, P_V)
+        attn.forward = _make_patched_forward(attn, P_K, P_V,
+                                             training_state=training_state)
 
     return prefix_kvs
 

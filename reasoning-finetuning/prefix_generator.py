@@ -146,8 +146,11 @@ class PrefixGenerator(nn.Module):
         with torch.no_grad():
             for i in range(self.num_layers):
                 attn = chronos_model.model.encoder.block[i].layer[0].SelfAttention
-                Wk = attn.k.weight.data   # (inner_dim=512, d_model=512)
-                Wv = attn.v.weight.data   # (inner_dim=512, d_model=512)
+                # Move weights to CPU for the warm-start computation so that the
+                # CPU-seeded H_raw generator is on the same device. The resulting
+                # bias vectors are then copied to the correct device via .copy_().
+                Wk = attn.k.weight.data.cpu()   # (inner_dim=512, d_model=512)
+                Wv = attn.v.weight.data.cpu()   # (inner_dim=512, d_model=512)
 
                 # m orthonormal template hidden states (reproducible per layer)
                 gen = torch.Generator().manual_seed(42 + i)
@@ -156,8 +159,8 @@ class PrefixGenerator(nn.Module):
                 H = H[:, : self.m]               # ensure exactly m columns
 
                 # Valid K/V projections: K_warm[p] = H[:, p] @ Wk.T
-                K_warm = H.T @ Wk.T   # (m, inner_dim) — Wk subspace
-                V_warm = H.T @ Wv.T   # (m, inner_dim) — Wv subspace
+                K_warm = H.T @ Wk.T   # (m, inner_dim) — Wk subspace (CPU)
+                V_warm = H.T @ Wv.T   # (m, inner_dim) — Wv subspace (CPU)
 
                 b_K = K_warm.reshape(-1)   # (m · d_model,)
                 b_V = V_warm.reshape(-1)
