@@ -1,0 +1,100 @@
+{
+  "checkpoint": "joint-stage2-5ds-5000.pt",
+  "ckpt_step": 5000,
+  "datasets_trained": [
+    "sarsim0",
+    "m4hourly",
+    "m4monthly",
+    "m4daily",
+    "m4weekly"
+  ],
+  "part_a": {
+    "sarsim0": {
+      "MASE_base": 0.6545,
+      "MASE_solo": 0.6511,
+      "MASE_stage1": null,
+      "MASE_joint": 0.6786484937711784,
+      "MSE_joint": 3.3404449034631254,
+      "MAE_joint": 0.6923748632520437,
+      "MSE_p95_joint": 1.7207346260547636,
+      "delta_solo": 0.027548493771178406,
+      "retain_pct": -710.2498167993748,
+      "ceil_fire": 0.11658993340997646,
+      "pre_ceil": 0.22610864466708153
+    },
+    "m4hourly": {
+      "MASE_base": 1.6565,
+      "MASE_solo": 1.2181,
+      "MASE_stage1": 1.1585,
+      "MASE_joint": 1.6735379636148462,
+      "MSE_joint": 596067.5511470403,
+      "MAE_joint": 259.306286609855,
+      "MSE_p95_joint": 1975746.7124999969,
+      "delta_solo": 0.45543796361484623,
+      "retain_pct": -3.886396809955772,
+      "ceil_fire": 0.2828504649630512,
+      "pre_ceil": 0.5081103047932009
+    },
+    "m4monthly": {
+      "MASE_base": 1.2105,
+      "MASE_solo": 0.7274,
+      "MASE_stage1": 0.7453,
+      "MASE_joint": 0.7592566331977351,
+      "MSE_joint": 778915.7438312235,
+      "MAE_joint": 406.35260286068916,
+      "MSE_p95_joint": 2888314.187499999,
+      "delta_solo": 0.03185663319773502,
+      "retain_pct": 93.40578902965535,
+      "ceil_fire": 0.510999449044466,
+      "pre_ceil": 0.7168138768449426
+    },
+    "m4daily": {
+      "MASE_base": 1.2123,
+      "MASE_solo": 1.0304,
+      "MASE_stage1": null,
+      "MASE_joint": 1.1003406225442103,
+      "MSE_joint": 169782.42269681476,
+      "MAE_joint": 150.92165877294877,
+      "MSE_p95_joint": 237797.40625,
+      "delta_solo": 0.0699406225442103,
+      "retain_pct": 61.54996011863094,
+      "ceil_fire": 0.3296206077990849,
+      "pre_ceil": 0.5456164605545659
+    },
+    "m4weekly": {
+      "MASE_base": 0.6308,
+      "MASE_solo": 0.5629,
+      "MASE_stage1": null,
+      "MASE_joint": 0.5978553429148654,
+      "MSE_joint": 526222.6771254805,
+      "MAE_joint": 326.1248618629244,
+      "MSE_p95_joint": 1451886.0375000003,
+      "delta_solo": 0.03495534291486546,
+      "retain_pct": 48.51937715041911,
+      "ceil_fire": 0.34734010851631564,
+      "pre_ceil": 0.5739693163583676
+    }
+  },
+  "part_b": {
+    "n_series": 370,
+    "MASE_base": 0.9002,
+    "MASE_solo": 0.8004,
+    "MSE_base": 3182265.0,
+    "MSE_solo": 1263494.0,
+    "MAE_base": 326.18,
+    "MAE_solo": 235.21,
+    "MASE_joint": 1.256141556957344,
+    "MSE_joint": 3292470.5974048227,
+    "MAE_joint": 338.7712922391545,
+    "MSE_p95_joint": 3403356.062500002,
+    "delta_vs_base": 0.355941556957344,
+    "delta_vs_solo": 0.455741556957344,
+    "delta_base_pct": 39.54027515633681,
+    "mse_delta_base_pct": 3.4631181691286774,
+    "ceil_fire_mean": 0.09175304695879957,
+    "pre_ceil_mean": 0.2184246302255102,
+    "transfer_verdict": "NEGATIVE TRANSFER",
+    "transfer_note": "Joint training hurt Electricity vs zero-shot. Investigate fix1b rate and period mismatch on this domain."
+  },
+  "stage3_cleared": false
+}
