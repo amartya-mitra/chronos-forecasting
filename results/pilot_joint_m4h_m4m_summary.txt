@@ -1,0 +1,34 @@
+===========================================================================
+PILOT: Joint Training  M4 Hourly + M4 Monthly  — COMPARISON TABLE
+===========================================================================
+
+Dataset          MASE_base   MASE_solo   MASE_joint   Δ(solo→joint)   Retain%
+---------------------------------------------------------------------------
+M4 Hourly           1.6565      1.2181       1.1585         -0.0596    113.6%
+M4 Monthly          1.2105      0.7274       0.7453         +0.0179     96.3%
+---------------------------------------------------------------------------
+
+  M4 Hourly  ΔMASE(joint vs base): -30.06%
+  M4 Monthly ΔMASE(joint vs base): -38.43%
+
+D6 TRAJECTORY (cosine similarity: hourly vs monthly prefix KVs):
+  step    0: 0.9981  ⚠⚠ COLLAPSED
+  step 1500: 0.9955  ⚠⚠ COLLAPSED
+  step 3000: 0.9939  ⚠⚠ COLLAPSED
+
+EMA fc_loss trajectory (hourly): [(0, 2.6246), (500, 2.4702), (1000, 2.2767), (1499, 2.2031), (1999, 2.1816), (2499, 2.1175), (2999, 2.053)]
+EMA fc_loss trajectory (monthly): [(0, None), (500, 3.0624), (1000, 3.1561), (1499, 2.9797), (1999, 3.0967), (2499, 2.9491), (2999, 3.0712)]
+
+===========================================================================
+PILOT VERDICT:  FAIL
+===========================================================================
+Reason: D6=0.9939 > 0.97 — prefix collapsed to a single representation
+
+PASS criteria:
+  • MASE_joint ≤ MASE_solo + 0.03 on BOTH datasets
+  • D6_final < 0.90  (differentiated prefix representations)
+
+Hourly  within tol:   True  (delta=-0.0596, tol=0.03)
+Monthly within tol:   True  (delta=+0.0179, tol=0.03)
+D6 condition:         False  (D6=0.9939 < 0.90)
+===========================================================================

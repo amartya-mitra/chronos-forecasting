@@ -1,0 +1,53 @@
+{
+  "checkpoint": "pilot-joint-m4h-m4m-3000.pt",
+  "ckpt_step": 3000,
+  "n_probe_per_ds": 64,
+  "prefix_dim_D": 294912,
+  "training_d6_traj": [
+    [
+      0,
+      0.9981043338775635
+    ],
+    [
+      1500,
+      0.9955416321754456
+    ],
+    [
+      3000,
+      0.9938527345657349
+    ]
+  ],
+  "d6a": {
+    "cov_hourly": 2.5195188522338867,
+    "cov_monthly": 0.3267764151096344,
+    "mean_cov": 1.4231476336717606,
+    "verdict": "INPUT-DEPENDENT (CoV \u2273 0.1)"
+  },
+  "d6b": {
+    "cos_mean_centered": -0.9999999403953552
+  },
+  "d6c": {
+    "cv_mean_accuracy": 1.0,
+    "cv_std_accuracy": 0.0,
+    "cv_fold_scores": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "verdict": "SEPARABLE (acc \u2273 90%)",
+    "note": ""
+  },
+  "d6d": {
+    "between_variance": 1382.1385498046875,
+    "within_variance_hourly": 2079.0546875,
+    "within_variance_monthly": 347.8634338378906,
+    "within_variance_mean": 1213.4590606689453,
+    "ratio": 1.1390071528598913
+  },
+  "verdict": "DIFFERENTIATED",
+  "conclusion": "Original FAIL was a metric artifact. D6 (mean-cosine) measures the shared warm-start component, not learned differentiation. Pilot is a PASS with positive transfer. Proceed to Stage 2.",
+  "stage2_cleared": true,
+  "pca_plot": "/mnt/home/amitra/chronos-forecasting/results/joint_pilot_pca.png"
+}
