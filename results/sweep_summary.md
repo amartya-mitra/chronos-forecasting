@@ -1,3 +1,5 @@
+<!-- SUPERSEDED by phase2_sweep_rescored.md (Job 3294 split, corrected eval script 698ecf5c68deff73) -->
+
 # Sweep Summary — Prefix Tuning Ablation
 
 | Group | Context | Period | N_train | MASE_base | MASE_pfx | ΔMASE | Improv% |

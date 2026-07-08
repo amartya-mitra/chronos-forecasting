@@ -29,11 +29,45 @@ Reference: prefix_tuning.md § Step 2
 
 from __future__ import annotations
 
+import math
 from typing import Union
 
 import numpy as np
 import torch
 import torch.nn as nn
+
+
+# ── Auxiliary conditioning embeddings ─────────────────────────────────────────
+
+def period_embedding(period: float, dim: int = 64) -> torch.Tensor:
+    """Sinusoidal embedding of log(period). Context-length-invariant."""
+    log_period = math.log(max(period, 1e-6))
+    freqs = torch.exp(torch.linspace(0.0, math.log(10000.0), dim // 2))
+    angles = log_period * freqs
+    return torch.cat([torch.sin(angles), torch.cos(angles)])   # (dim,)
+
+
+def context_length_embedding(ctx_len: int, dim: int = 32) -> torch.Tensor:
+    """Sinusoidal embedding of raw context length."""
+    freqs = torch.exp(torch.linspace(0.0, math.log(10000.0), dim // 2))
+    angles = float(ctx_len) * freqs
+    return torch.cat([torch.sin(angles), torch.cos(angles)])   # (dim,)
+
+
+def make_freq_ctx_aux(
+    period: float,
+    ctx_len: int,
+    period_dim: int = 64,
+    ctx_dim: int = 32,
+) -> torch.Tensor:
+    """
+    96-dim auxiliary vector: [period_embedding(64) | ctx_length_embedding(32)].
+    Computed once per sample, passed to PrefixGenerator.forward(aux=...).
+    """
+    return torch.cat([
+        period_embedding(period, period_dim),
+        context_length_embedding(ctx_len, ctx_dim),
+    ])   # (96,)
 
 
 class PrefixGenerator(nn.Module):
@@ -59,12 +93,16 @@ class PrefixGenerator(nn.Module):
         num_layers: int = 6,
         prefix_len_per_component: int = 16,
         rank: int = 64,
+        aux_dim: int = 0,
     ) -> None:
         super().__init__()
 
-        self.m = prefix_len_per_component
-        self.d = d_model
+        self.m       = prefix_len_per_component
+        self.d       = d_model
         self.num_layers = num_layers
+        self.aux_dim = aux_dim
+
+        combined_dim = d_model + aux_dim   # 512 normally; 608 with aux_dim=96
 
         # Shared encoder: AdaptiveAvgPool1d(32) makes this context-length-agnostic —
         # any input length is pooled to a fixed 32-step representation.
@@ -77,12 +115,19 @@ class PrefixGenerator(nn.Module):
         )
 
         def _factored_head() -> nn.Sequential:
-            return nn.Sequential(
-                nn.Linear(d_model, rank),
+            head = nn.Sequential(
+                nn.Linear(combined_dim, rank),
                 nn.Linear(rank, 2 * prefix_len_per_component * d_model),
             )
+            # Near-zero init for the aux slice of the first linear so the
+            # aux signal phases in gradually and warm-start KV subspace is
+            # undisturbed at step 0.
+            if aux_dim > 0:
+                with torch.no_grad():
+                    head[0].weight.data[:, d_model:].mul_(0.01)
+            return head
 
-        # Per-component projection heads: one factored (d_model→rank→2md) block
+        # Per-component projection heads: one factored (combined_dim→rank→2md) block
         # per attention layer.  Low-rank bottleneck keeps total params ~20M.
         self.proj_trend    = nn.ModuleList([_factored_head() for _ in range(num_layers)])
         self.proj_seasonal = nn.ModuleList([_factored_head() for _ in range(num_layers)])
@@ -206,12 +251,16 @@ class PrefixGenerator(nn.Module):
         trend:    Union[np.ndarray, torch.Tensor],
         seasonal: Union[np.ndarray, torch.Tensor],
         noise:    Union[np.ndarray, torch.Tensor],
+        aux:      Union[None, torch.Tensor] = None,
     ) -> list[tuple[torch.Tensor, torch.Tensor]]:
         """
         Args:
             trend:    (context_length,) or (batch, context_length)
             seasonal: same shape as trend
             noise:    same shape as trend
+            aux:      (aux_dim,) or (batch, aux_dim) — period/ctx-length
+                      conditioning vector from make_freq_ctx_aux().
+                      Required when aux_dim > 0; ignored when aux_dim == 0.
 
         Returns:
             List of num_layers (K, V) tuples.
@@ -227,6 +276,15 @@ class PrefixGenerator(nn.Module):
         h_s = self.encoder(s)
         h_n = self.encoder(n)
 
+        # Concatenate aux conditioning if present
+        if self.aux_dim > 0 and aux is not None:
+            if aux.dim() == 1:
+                aux = aux.unsqueeze(0).expand(h_t.shape[0], -1)
+            aux = aux.to(h_t.device)
+            h_t = torch.cat([h_t, aux], dim=1)   # (batch, d_model + aux_dim)
+            h_s = torch.cat([h_s, aux], dim=1)
+            h_n = torch.cat([h_n, aux], dim=1)
+
         prefix_kvs: list[tuple[torch.Tensor, torch.Tensor]] = []
         for l in range(self.num_layers):
             # Project and split into K, V: each (batch, m, d_model)
@@ -239,6 +297,94 @@ class PrefixGenerator(nn.Module):
             prefix_kvs.append((K, V))
 
         return prefix_kvs
+
+
+# ── Option C Stage-2 modules ──────────────────────────────────────────────────
+
+class ReasoningHead(nn.Module):
+    """
+    Stage-2 prefix generator for Option C two-stage prefix tuning.
+
+    Maps the concatenation of:
+      (i)  residual_pooled  — STL residual of the context, passed through the
+                              FROZEN Stage-1 shared encoder: (batch, d_model)
+      (ii) enc_h2           — Chronos encoder hidden state after layer 2,
+                              mean-pooled over the sequence dimension: (batch, d_model)
+    to a 16-token KV prefix for encoder layers 3-5.
+
+    combined_2 = cat([residual_pooled, enc_h2])  →  (batch, 2×d_model)
+    proj: Linear(2d→rank) → Linear(rank→2×16×d) → K, V each (batch, 16, d)
+
+    Init: Kaiming (no warm-start — new capability, not a Chronos replica).
+    """
+
+    def __init__(
+        self,
+        d_model: int = 512,
+        prefix_len: int = 16,
+        rank: int = 64,
+    ) -> None:
+        super().__init__()
+        self.prefix_len = prefix_len
+        self.d = d_model
+        self.proj = nn.Sequential(
+            nn.Linear(2 * d_model, rank),
+            nn.Linear(rank, 2 * prefix_len * d_model),
+        )
+        nn.init.kaiming_uniform_(self.proj[0].weight, a=math.sqrt(5))
+        nn.init.zeros_(self.proj[0].bias)
+        nn.init.kaiming_uniform_(self.proj[1].weight, a=math.sqrt(5))
+        nn.init.zeros_(self.proj[1].bias)
+
+    def forward(
+        self, h: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            h: (batch, 2×d_model) — cat([residual_pooled, enc_h2])
+        Returns:
+            K, V: each (batch, prefix_len, d_model)
+        """
+        out = self.proj(h)                                    # (batch, 2×prefix_len×d)
+        K, V = out.view(-1, 2, self.prefix_len, self.d).unbind(1)
+        return K, V
+
+
+class Decoder2(nn.Module):
+    """
+    Residual decodability head for L_recon2 and the D8 diagnostic.
+
+    Reconstructs a RECON2_DIM-dimensional summary of the STL-residual
+    FUTURE structure from the flattened KV_prefix_2 tokens.
+
+    KV_prefix_2 flat: cat(K.flatten(1), V.flatten(1))
+      = (batch, 2 × prefix_len × d_model)
+    proj: Linear(2×16×512, out_dim=64) → (batch, 64)
+    """
+
+    def __init__(
+        self,
+        prefix_len: int = 16,
+        d_model: int = 512,
+        out_dim: int = 64,
+    ) -> None:
+        super().__init__()
+        in_dim = 2 * prefix_len * d_model   # 16384 for default config
+        self.proj = nn.Linear(in_dim, out_dim)
+        nn.init.kaiming_uniform_(self.proj.weight, a=math.sqrt(5))
+        nn.init.zeros_(self.proj.bias)
+
+    def forward(
+        self, K: torch.Tensor, V: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Args:
+            K, V: each (batch, prefix_len, d_model)
+        Returns:
+            (batch, out_dim)
+        """
+        kv_flat = torch.cat([K.flatten(1), V.flatten(1)], dim=1)
+        return self.proj(kv_flat)
 
 
 # ── unit test ─────────────────────────────────────────────────────────────────

@@ -36,7 +36,7 @@ import torch.nn as nn
 # ── internal: per-layer patched forward factory ───────────────────────────────
 
 def _make_patched_forward(attn, P_K: torch.Tensor, P_V: torch.Tensor,
-                          training_state=None):
+                          training_state=None, reset_position_bias: bool = False):
     """
     Return a replacement forward() for one T5Attention module.
 
@@ -82,6 +82,14 @@ def _make_patched_forward(attn, P_K: torch.Tensor, P_V: torch.Tensor,
         n_heads = attn.n_heads
         d_kv    = attn.key_value_proj_dim
         is_cross_attention = key_value_states is not None
+
+        # ── Position-bias reset (layer-split two-stage injection) ──────────
+        # When Stage-2 prefix (16 tokens) follows Stage-1 prefix (48 tokens),
+        # the position_bias arriving from layer 2 has the wrong last dimension.
+        # Forcing None causes this layer to re-initialise it as zeros, which
+        # is correct for layers that lack has_relative_attention_bias.
+        if reset_position_bias:
+            position_bias = None
 
         # ── Q projection ───────────────────────────────────────────────────
         query_states = attn.q(hidden_states)
@@ -206,48 +214,128 @@ def _make_patched_forward(attn, P_K: torch.Tensor, P_V: torch.Tensor,
         # Prevents attention collapse (pfx_total→1.0) seen in outlier series.
         # Only active when training_state is provided; inference is unchanged.
         #
-        # CEILING(step) = min(0.5 + 0.3 × (step / total_steps), 0.8)
-        #   step=0:    0.50  (protective — blocks pathological cases)
-        #   step=1000: 0.65  (relaxing — prefix has learned useful content)
-        #   step=2000: 0.80  (permissive)
+        # Unified mode (training_state without 'stage1_len'):
+        #   CEILING(step) = min(0.5 + 0.3 × (step / total_steps), 0.8)
+        #
+        # Split mode (training_state with 'stage1_len' — C1-v3):
+        #   Stage-1 (first stage1_len tokens): unified ceiling above
+        #   Stage-2 (remaining tokens):
+        #     CEIL_2(step) = min(uniform_share × 1.2 × (step/total_steps),
+        #                        uniform_share × 1.5)
+        #     where uniform_share = stage2_len / total_attn_keys
         if training_state is not None:
-            cur_step   = training_state.get('current_step', 0)
-            tot_steps  = max(training_state.get('total_steps', 2000), 1)
-            ceiling    = min(0.5 + 0.3 * (cur_step / tot_steps), 0.8)
+            cur_step  = training_state.get('current_step', 0)
+            tot_steps = max(training_state.get('total_steps', 2000), 1)
+            stage1_len = training_state.get('stage1_len', None)
 
-            # Split weights: (b, h, q, prefix_total) and (b, h, q, seq_len)
-            pfx_w  = attn_weights[..., :prefix_total]
-            inp_w  = attn_weights[..., prefix_total:]
+            if stage1_len is not None and prefix_total > stage1_len:
+                # ── Split ceiling mode (C1-v3) ─────────────────────────────
+                stage2_len = prefix_total - stage1_len  # e.g. 16
 
-            # Total prefix attention mass per query position: (b, h, q, 1)
-            pfx_mass = pfx_w.sum(dim=-1, keepdim=True)
+                pfx1_w = attn_weights[..., :stage1_len]
+                pfx2_w = attn_weights[..., stage1_len:prefix_total]
+                inp_w  = attn_weights[..., prefix_total:]
 
-            # Track pre-ceiling values for diagnostics
-            pre_ceil_acc = training_state.get('pfx_total_pre_ceil_accumulator')
-            if pre_ceil_acc is not None:
-                pre_ceil_acc.append(pfx_mass.detach().mean().item())
+                sum1 = pfx1_w.sum(dim=-1, keepdim=True)  # (b, h, q, 1)
+                sum2 = pfx2_w.sum(dim=-1, keepdim=True)
 
-            # Per-position scale: clamp where mass > ceiling
-            scale = torch.where(
-                pfx_mass > ceiling,
-                ceiling / (pfx_mass + 1e-9),
-                torch.ones_like(pfx_mass),
-            )
-            pfx_w_clamped = pfx_w * scale
+                # Stage-1 ceiling: 0.5 → 0.8 annealing
+                ceil_1 = min(0.5 + 0.3 * (cur_step / tot_steps), 0.8)
 
-            # Redistribute remaining attention mass to input tokens
-            inp_sum              = inp_w.sum(dim=-1, keepdim=True) + 1e-9
-            remaining            = 1.0 - pfx_w_clamped.sum(dim=-1, keepdim=True)
-            inp_w_boosted        = inp_w * (remaining / inp_sum)
-
-            # Track ceiling firing rate (fraction of positions clamped)
-            fired_acc = training_state.get('ceiling_fired_accumulator')
-            if fired_acc is not None:
-                fired_acc.append(
-                    (pfx_mass.detach() > ceiling).float().mean().item()
+                # Stage-2 ceiling: proportional share, slowly opening
+                total_attn_keys = float(attn_weights.shape[-1])  # pfx_total + seq_len
+                uniform_share   = stage2_len / total_attn_keys
+                ceil_2 = min(
+                    uniform_share * 1.2 * (cur_step / tot_steps),
+                    uniform_share * 1.5,
                 )
 
-            attn_weights = torch.cat([pfx_w_clamped, inp_w_boosted], dim=-1)
+                # Track pre-ceiling values
+                s1_pre = training_state.get('stage1_pre_ceil_accumulator')
+                s2_pre = training_state.get('stage2_pre_ceil_accumulator')
+                if s1_pre is not None:
+                    s1_pre.append(sum1.detach().mean().item())
+                if s2_pre is not None:
+                    s2_pre.append(sum2.detach().mean().item())
+
+                s2_us = training_state.get('stage2_uniform_share_accumulator')
+                if s2_us is not None:
+                    s2_us.append(uniform_share)
+
+                # Clamp Stage-1
+                scale1       = torch.where(sum1 > ceil_1,
+                                           ceil_1 / (sum1 + 1e-9),
+                                           torch.ones_like(sum1))
+                pfx1_clamped = pfx1_w * scale1
+
+                # Clamp Stage-2
+                scale2       = torch.where(sum2 > ceil_2,
+                                           ceil_2 / (sum2 + 1e-9),
+                                           torch.ones_like(sum2))
+                pfx2_clamped = pfx2_w * scale2
+
+                # Redistribute remaining attention mass to input tokens
+                inp_sum     = inp_w.sum(dim=-1, keepdim=True) + 1e-9
+                remaining   = (1.0
+                               - pfx1_clamped.sum(dim=-1, keepdim=True)
+                               - pfx2_clamped.sum(dim=-1, keepdim=True))
+                inp_boosted = inp_w * (remaining / inp_sum)
+
+                # Track firing rates
+                s1_fired = training_state.get('stage1_ceil_fired_accumulator')
+                s2_fired = training_state.get('stage2_ceil_fired_accumulator')
+                if s1_fired is not None:
+                    s1_fired.append((sum1.detach() > ceil_1).float().mean().item())
+                if s2_fired is not None:
+                    s2_fired.append((sum2.detach() > ceil_2).float().mean().item())
+
+                # Backward-compat combined accumulators (sum of both prefix groups)
+                pfx_all_clamped = torch.cat([pfx1_clamped, pfx2_clamped], dim=-1)
+                pfx_mass_comb   = pfx_all_clamped.sum(dim=-1, keepdim=True)
+                pre_ceil_acc = training_state.get('pfx_total_pre_ceil_accumulator')
+                if pre_ceil_acc is not None:
+                    pre_ceil_acc.append(
+                        (sum1 + sum2).detach().mean().item()
+                    )
+                fired_acc = training_state.get('ceiling_fired_accumulator')
+                if fired_acc is not None:
+                    fired_acc.append(
+                        ((sum1.detach() > ceil_1) | (sum2.detach() > ceil_2))
+                        .float().mean().item()
+                    )
+
+                attn_weights = torch.cat([pfx1_clamped, pfx2_clamped, inp_boosted], dim=-1)
+
+            else:
+                # ── Unified ceiling mode (original / backward-compatible) ──
+                ceiling  = min(0.5 + 0.3 * (cur_step / tot_steps), 0.8)
+
+                pfx_w    = attn_weights[..., :prefix_total]
+                inp_w    = attn_weights[..., prefix_total:]
+                pfx_mass = pfx_w.sum(dim=-1, keepdim=True)
+
+                pre_ceil_acc = training_state.get('pfx_total_pre_ceil_accumulator')
+                if pre_ceil_acc is not None:
+                    pre_ceil_acc.append(pfx_mass.detach().mean().item())
+
+                scale = torch.where(
+                    pfx_mass > ceiling,
+                    ceiling / (pfx_mass + 1e-9),
+                    torch.ones_like(pfx_mass),
+                )
+                pfx_w_clamped = pfx_w * scale
+
+                inp_sum       = inp_w.sum(dim=-1, keepdim=True) + 1e-9
+                remaining     = 1.0 - pfx_w_clamped.sum(dim=-1, keepdim=True)
+                inp_w_boosted = inp_w * (remaining / inp_sum)
+
+                fired_acc = training_state.get('ceiling_fired_accumulator')
+                if fired_acc is not None:
+                    fired_acc.append(
+                        (pfx_mass.detach() > ceiling).float().mean().item()
+                    )
+
+                attn_weights = torch.cat([pfx_w_clamped, inp_w_boosted], dim=-1)
 
         # ── Output projection ──────────────────────────────────────────────
         attn_output = torch.matmul(attn_weights, value_states)
@@ -344,6 +432,145 @@ def inject_prefix(
                                              training_state=training_state)
 
     return prefix_kvs
+
+
+def _make_bias_reset_forward(attn):
+    """
+    Wrap T5Attention.forward to force position_bias=None on entry.
+
+    Used on layer 3 when inject_prefix_first3 is active: layer 2's patched
+    forward returns position_bias with shape (b, h, q, 48+k) but layer 3's
+    unpatched attention scores have shape (b, h, q, k), causing a broadcast
+    failure.  Resetting to None lets layer 3 re-initialise the bias as zeros
+    of the correct shape (1, n_heads, seq, seq) — safe because layer 3 lacks
+    has_relative_attention_bias.
+    """
+    def patched_forward(*args, **kwargs):
+        kwargs['position_bias'] = None
+        return attn._original_forward(*args, **kwargs)
+    return patched_forward
+
+
+def inject_prefix_first3(chronos_model, kv_list, training_state=None):
+    """
+    Inject prefix only on encoder layers 0-2.  Layers 3-5 are left unpatched
+    except layer 3 which gets a position_bias reset to handle the shape
+    mismatch caused by layer 2's 48-token prefix.
+
+    Used as Pass-1 in two-stage training to capture encoder hidden states
+    after layer 2 without yet having a Stage-2 prefix.
+
+    Args:
+        chronos_model: pipeline.model (ChronosModel)
+        kv_list:       list of ≥3 (K, V) tuples from PrefixGenerator.forward()
+        training_state: optional ceiling state dict (see _make_patched_forward)
+    """
+    for i in range(3):
+        attn = chronos_model.model.encoder.block[i].layer[0].SelfAttention
+        if not hasattr(attn, "_original_forward"):
+            attn._original_forward = attn.forward
+        P_K, P_V = kv_list[i]
+        attn.forward = _make_patched_forward(
+            attn, P_K.detach(), P_V.detach(), training_state=training_state
+        )
+    # Layer 3 receives position_bias of wrong shape from layer 2; reset it.
+    attn3 = chronos_model.model.encoder.block[3].layer[0].SelfAttention
+    if not hasattr(attn3, "_original_forward"):
+        attn3._original_forward = attn3.forward
+    attn3.forward = _make_bias_reset_forward(attn3)
+
+
+def inject_prefix_split(
+    chronos_model,
+    kv1_list,
+    K2: torch.Tensor,
+    V2: torch.Tensor,
+    training_state_1=None,
+    training_state_2=None,
+):
+    """
+    Layer-split two-stage prefix injection for Option C.
+
+    Layers 0-2 receive Stage-1 prefix from kv1_list (48 tokens, 3×16).
+    Layers 3-5 receive Stage-2 prefix (K2, V2) — the same 16-token prefix
+    is shared across all three Stage-2 layers.
+
+    Position bias is reset at layer 3 (zero-initialised) to handle the
+    change in prefix_total from 48 (Stage-1) to 16 (Stage-2).  Layers 4-5
+    then inherit the correctly-sized bias from layer 3.
+
+    Args:
+        chronos_model:    pipeline.model (ChronosModel)
+        kv1_list:         list of ≥6 (K1, V1) tuples from Stage-1 PrefixGenerator
+                          (only indices 0-2 are used for layers 0-2)
+        K2, V2:           (batch, 16, d_model) Stage-2 prefix tensors; may carry
+                          grad_fn when called from the training pass
+        training_state_1: ceiling/monitoring state for Stage-1 layers (0-2)
+        training_state_2: ceiling/monitoring state for Stage-2 layers (3-5)
+    """
+    if len(kv1_list) < 3:
+        raise ValueError(f"kv1_list needs ≥3 entries; got {len(kv1_list)}")
+    num_enc = len(chronos_model.model.encoder.block)
+    if num_enc != 6:
+        raise ValueError(f"Expected 6 encoder layers; got {num_enc}")
+
+    for i in range(num_enc):
+        attn = chronos_model.model.encoder.block[i].layer[0].SelfAttention
+        if not hasattr(attn, "_original_forward"):
+            attn._original_forward = attn.forward
+
+        if i < 3:
+            P_K, P_V = kv1_list[i]
+            attn.forward = _make_patched_forward(
+                attn, P_K.detach(), P_V.detach(),
+                training_state=training_state_1,
+                reset_position_bias=False,
+            )
+        else:
+            # Same (K2, V2) applied to layers 3, 4, 5.
+            # reset_position_bias=True only on layer 3 to re-initialise the
+            # position_bias that arrived (with wrong shape) from layer 2.
+            attn.forward = _make_patched_forward(
+                attn, K2, V2,
+                training_state=training_state_2,
+                reset_position_bias=(i == 3),
+            )
+
+
+def inject_prefix_all_combined(
+    chronos_model,
+    kv1_list,
+    K2: torch.Tensor,
+    V2: torch.Tensor,
+    training_state=None,
+):
+    """
+    C1-v2: inject Stage-1 prefix (48-tok) + Stage-2 prefix (16-tok) on ALL 6 layers.
+
+    Each layer i receives cat([kv1[i], K2], dim=1) — 64 tokens total.
+    kv1 tokens are detached (Stage-1 frozen); K2/V2 may carry grad_fn (training).
+
+    Ablation / E0 path: call inject_prefix(chronos_model, prefix_kvs=kv1_list)
+    instead — injects only the 48-token Stage-1 prefix, identical to E0.
+    SC1 passes by construction.
+    """
+    num_enc = len(chronos_model.model.encoder.block)
+    if num_enc != 6:
+        raise ValueError(f"Expected 6 encoder layers; got {num_enc}")
+    if len(kv1_list) < 6:
+        raise ValueError(f"kv1_list needs ≥6 entries; got {len(kv1_list)}")
+
+    for i in range(num_enc):
+        attn = chronos_model.model.encoder.block[i].layer[0].SelfAttention
+        if not hasattr(attn, "_original_forward"):
+            attn._original_forward = attn.forward
+        K1i, V1i = kv1_list[i]
+        # K2/V2 gradient preserved through cat (Stage-1 tokens detached)
+        K_comb = torch.cat([K1i.detach(), K2], dim=1)   # (batch, 64, d_model)
+        V_comb = torch.cat([V1i.detach(), V2], dim=1)
+        attn.forward = _make_patched_forward(
+            attn, K_comb, V_comb, training_state=training_state
+        )
 
 
 def remove_prefix_hooks(chronos_model):
